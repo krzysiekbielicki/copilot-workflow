@@ -126,7 +126,7 @@ handle_dirty_worktree() {
 # ── No git repo → just run copilot ──────────────────────────────────────────
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo "Not inside a git repository — launching copilot directly."
-    copilot "${COPILOT_ARGS[@]}"
+    copilot "${COPILOT_ARGS[@]-}"
     exit 0
 fi
 
@@ -283,7 +283,7 @@ case "$_worktree_choice" in
     "No, run Copilot here")
         echo "Launching copilot in current directory..."
         echo
-        copilot "${COPILOT_ARGS[@]}" || true
+        copilot "${COPILOT_ARGS[@]-}" || true
         exit 0
         ;;
     "Yes, use a different branch")
@@ -354,7 +354,7 @@ echo "Launching copilot..."
 echo
 
 # ── Run copilot ──────────────────────────────────────────────────────────────
-copilot "${COPILOT_ARGS[@]}" || true  # don't exit on non-zero exit from copilot
+copilot "${COPILOT_ARGS[@]-}" || true  # don't exit on non-zero exit from copilot
 
 # ── Post-copilot cleanup ─────────────────────────────────────────────────────
 cd "$WORKTREE_PATH"
