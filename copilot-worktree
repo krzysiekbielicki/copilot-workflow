@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ORIGINAL_DIR=$(pwd)
+CREATED_WORKTREE=false
+WORKTREE_PATH=""
+COPILOT_ARGS=("$@")
+
+# ── Arrow-key menu ────────────────────────────────────────────────────────────
+# Usage: menu <result_var> <prompt> <option1> <option2> ...
+# Sets result_var to the chosen option string.
+menu() {
+    local _var="$1"; shift
+    local _prompt="$1"; shift
+    local _opts=("$@")
+    local _idx=0
+    local _n=${#_opts[@]}
+    local _key _esc=$'\033'
+
+    tput civis 2>/dev/null  # hide cursor
+
+    _render() {
+        for (( i=0; i<_n; i++ )); do
+            if (( i == _idx )); then
+                printf "\r\033[2K\033[36m❯ %s\033[0m\n" "${_opts[$i]}"
+            else
+                printf "\r\033[2K  %s\n" "${_opts[$i]}"
+            fi
+        done
+    }
+
+    printf "\033[1m%s\033[0m\n" "$_prompt"
+    _render
+
+    while true; do
+        IFS= read -rsn1 _key
+        if [[ "$_key" == "$_esc" ]]; then
+            read -rsn2 -t 1 _key || true
+            case "$_key" in
+                '[A') (( _idx = (_idx - 1 + _n) % _n )) || true ;;  # up
+                '[B') (( _idx = (_idx + 1) % _n )) || true ;;       # down
+            esac
+        elif [[ "$_key" == '' ]]; then
+            break  # Enter — cursor stays after last render
+        else
+            continue
+        fi
+        tput cuu "$_n" 2>/dev/null
+        _render
+    done
+
+    tput cnorm 2>/dev/null
+    # Go up to the prompt line (_n options + prompt = _n+1 lines above cursor)
+    tput cuu $(( _n + 1 )) 2>/dev/null
+    for (( i=0; i < _n + 1; i++ )); do printf "\r\033[2K\n"; done
+    tput cuu $(( _n + 1 )) 2>/dev/null
+    printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "${_opts[$_idx]}"
+
+    printf -v "$_var" '%s' "${_opts[$_idx]}"
+}
+
+cleanup_and_return() {
+    local worktree_path="$1"
+    local created="$2"
+
+    cd "$ORIGINAL_DIR"
+
+    if [[ "$created" == true ]]; then
+        echo "Removing worktree: $worktree_path"
+        git worktree remove --force "$worktree_path"
+    fi
+
+    if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
+        local _switch_opts=("Yes, switch to $CHOSEN_BRANCH" "No, stay on $current_branch")
+        if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+            _switch_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+        fi
+        local _switch_choice
+        menu _switch_choice "What next?" "${_switch_opts[@]}"
+        case "$_switch_choice" in
+            "Yes, switch to $CHOSEN_BRANCH")
+                git checkout "$CHOSEN_BRANCH" ;;
+            "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+                git branch -D "$CHOSEN_BRANCH"
+                echo "Branch $CHOSEN_BRANCH deleted." ;;
+        esac
+    fi
+}
+
+handle_dirty_worktree() {
+    local worktree_path="$1"
+    local created="$2"
+
+    echo
+    echo "Worktree has uncommitted or untracked changes:"
+    git status --short
+    echo
+
+    local _dirty_opts=("Stage all and commit" "Exit (keep worktree)")
+    if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+        _dirty_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+    fi
+    local _dirty_choice
+    menu _dirty_choice "What would you like to do?" "${_dirty_opts[@]}"
+
+    case "$_dirty_choice" in
+        "Stage all and commit")
+            git add -A
+            read -rp "Commit message: " commit_msg
+            git commit -m "$commit_msg"
+            cleanup_and_return "$worktree_path" "$created"
+            ;;
+        "Exit (keep worktree)")
+            echo "Leaving worktree intact at: $worktree_path"
+            exit 0
+            ;;
+        "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+            cd "$ORIGINAL_DIR"
+            git worktree remove --force "$worktree_path"
+            git branch -D "$CHOSEN_BRANCH"
+            echo "Branch $CHOSEN_BRANCH deleted."
+            ;;
+    esac
+}
+
+# ── No git repo → just run copilot ──────────────────────────────────────────
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    echo "Not inside a git repository — launching copilot directly."
+    copilot "${COPILOT_ARGS[@]}"
+    exit 0
+fi
+
+# ── Ask whether to use a different branch ───────────────────────────────────
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+CHOSEN_BRANCH=""
+
+# ── Branch menu: paginated list + inline text input on last item ──────────────
+# Sets CHOSEN_BRANCH. Returns via MANUAL: prefix for typed names.
+_branch_menu() {
+    local _var="$1"; shift
+    local _prompt="$1"; shift
+    local _regular_opts=("$@")
+    # Manual input is always the last virtual item
+    local _all_opts=("${_regular_opts[@]}" "Enter branch name manually")
+    local _n=${#_all_opts[@]}
+    local _manual_idx=$(( _n - 1 ))
+    local _idx=0 _input="" _in_input=false
+    local _key _esc=$'\033'
+
+    tput civis 2>/dev/null
+
+    _bm_render() {
+        for (( i=0; i<_n; i++ )); do
+            if (( i == _idx )); then
+                if (( i == _manual_idx )); then
+                    if $_in_input; then
+                        printf "\r\033[2K\033[36m❯ %s\033[7m \033[0m\n" "$_input"
+                    else
+                        printf "\r\033[2K\033[36m❯ Enter branch name manually\033[0m\n"
+                    fi
+                else
+                    printf "\r\033[2K\033[36m❯ %s\033[0m\n" "${_all_opts[$i]}"
+                fi
+            else
+                if (( i == _manual_idx )); then
+                    printf "\r\033[2K  Enter branch name manually\n"
+                else
+                    printf "\r\033[2K  %s\n" "${_all_opts[$i]}"
+                fi
+            fi
+        done
+    }
+
+    _bm_go_to() {
+        _idx="$1"
+        if (( _idx == _manual_idx )); then
+            _in_input=true
+        else
+            _in_input=false
+            _input=""
+        fi
+    }
+
+    printf "\033[1m%s\033[0m\n" "$_prompt"
+    _bm_render
+
+    while true; do
+        if $_in_input; then
+            IFS= read -rsn1 _key
+            if [[ "$_key" == "$_esc" ]]; then
+                read -rsn2 -t 1 _key || true
+                case "$_key" in
+                    '[A') _bm_go_to $(( _manual_idx > 0 ? _manual_idx - 1 : 0 )) ;;
+                    '[B') _bm_go_to 0 ;;
+                esac
+            elif [[ "$_key" == '' ]]; then
+                [[ -n "$_input" ]] && break
+                continue
+            elif [[ "$_key" == $'\x7f' || "$_key" == $'\b' ]]; then
+                [[ -n "$_input" ]] && _input="${_input%?}"
+            elif [[ "$_key" =~ ^[[:print:]]$ ]]; then
+                _input+="$_key"
+            else
+                continue
+            fi
+        else
+            IFS= read -rsn1 _key
+            if [[ "$_key" == "$_esc" ]]; then
+                read -rsn2 -t 1 _key || true
+                case "$_key" in
+                    '[A') _bm_go_to $(( (_idx - 1 + _n) % _n )) ;;
+                    '[B') _bm_go_to $(( (_idx + 1) % _n )) ;;
+                esac
+            elif [[ "$_key" == '' ]]; then
+                break  # Enter — cursor stays after last render
+            else
+                continue
+            fi
+        fi
+        tput cuu "$_n" 2>/dev/null
+        _bm_render
+    done
+
+    tput cnorm 2>/dev/null
+    tput cuu $(( _n + 1 )) 2>/dev/null
+    for (( i=0; i < _n + 1; i++ )); do printf "\r\033[2K\n"; done
+    tput cuu $(( _n + 1 )) 2>/dev/null
+
+    if (( _idx == _manual_idx )); then
+        printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "$_input"
+        printf -v "$_var" 'MANUAL:%s' "$_input"
+    else
+        printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "${_all_opts[$_idx]}"
+        printf -v "$_var" '%s' "${_all_opts[$_idx]}"
+    fi
+}
+
+choose_branch() {
+    local all_branches=()
+    while IFS= read -r b; do
+        [[ "$b" != "$current_branch" ]] && all_branches+=("$b")
+    done < <(git branch --sort=-committerdate --format='%(refname:short)' 2>/dev/null)
+
+    local page=0
+    local page_size=10
+
+    while true; do
+        local start=$(( page * page_size ))
+        local page_branches=("${all_branches[@]:$start:$page_size}")
+        local options=("${page_branches[@]}")
+        # Only show ">> next" when this page is full AND more branches exist
+        if [[ ${#page_branches[@]} -eq $page_size && ${#all_branches[@]} -gt $(( start + page_size )) ]]; then
+            options+=(">> next")
+        fi
+
+        local result=""
+        _branch_menu result "Select branch:" "${options[@]}"
+
+        case "$result" in
+            ">> next") (( page++ )) || true ;;
+            MANUAL:*)
+                CHOSEN_BRANCH="${result#MANUAL:}"
+                break
+                ;;
+            "")
+                echo "No branch selected. Exiting."
+                exit 1
+                ;;
+            *)
+                CHOSEN_BRANCH="$result"
+                break
+                ;;
+        esac
+    done
+}
+
+_worktree_choice=""
+menu _worktree_choice "Run Copilot in a different branch (worktree)?" \
+    "No, run Copilot here" \
+    "Yes, use a different branch"
+
+case "$_worktree_choice" in
+    "No, run Copilot here")
+        echo "Launching copilot in current directory..."
+        echo
+        copilot "${COPILOT_ARGS[@]}" || true
+        exit 0
+        ;;
+    "Yes, use a different branch")
+        choose_branch
+        ;;
+esac
+
+if [[ -z "$CHOSEN_BRANCH" ]]; then
+    echo "No branch selected. Exiting."
+    exit 1
+fi
+
+# Determine if the chosen branch already exists locally
+if git rev-parse --verify "$CHOSEN_BRANCH" > /dev/null 2>&1; then
+    BRANCH_EXISTS=true
+else
+    BRANCH_EXISTS=false
+fi
+
+echo "Using branch: $CHOSEN_BRANCH"
+current_dir_name="${ORIGINAL_DIR##*/}"
+parent_dir=$(cd .. && pwd)
+worktree_name="$current_dir_name-${CHOSEN_BRANCH//\//_}"
+WORKTREE_PATH="$parent_dir/$worktree_name"
+
+worktree_add() {
+    local path="$1" branch="$2"
+    if [[ "$BRANCH_EXISTS" == true ]]; then
+        git worktree add "$path" "$branch"
+    else
+        git worktree add -b "$branch" "$path"
+    fi
+}
+
+# ── Handle existing directory ────────────────────────────────────────────────
+if [[ -e "$WORKTREE_PATH" ]]; then
+    echo "Directory already exists: $WORKTREE_PATH"
+    _exist_choice=""
+    menu _exist_choice "What would you like to do?" \
+        "Use existing worktree directory" \
+        "Add timestamp suffix" \
+        "Exit"
+    case "$_exist_choice" in
+        "Exit")
+            exit 0
+            ;;
+        "Use existing worktree directory")
+            CREATED_WORKTREE=false
+            cd "$WORKTREE_PATH"
+            ;;
+        "Add timestamp suffix")
+            timestamp=$(date +%Y%m%d%H%M%S)
+            worktree_name="$current_dir_name-$CHOSEN_BRANCH-$timestamp"
+            WORKTREE_PATH="$parent_dir/$worktree_name"
+            worktree_add "$WORKTREE_PATH" "$CHOSEN_BRANCH"
+            CREATED_WORKTREE=true
+            cd "$WORKTREE_PATH"
+            ;;
+    esac
+else
+    worktree_add "$WORKTREE_PATH" "$CHOSEN_BRANCH"
+    CREATED_WORKTREE=true
+    cd "$WORKTREE_PATH"
+fi
+
+echo "Worktree ready at: $WORKTREE_PATH"
+echo "Launching copilot..."
+echo
+
+# ── Run copilot ──────────────────────────────────────────────────────────────
+copilot "${COPILOT_ARGS[@]}" || true  # don't exit on non-zero exit from copilot
+
+# ── Post-copilot cleanup ─────────────────────────────────────────────────────
+cd "$WORKTREE_PATH"
+
+if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
+    cleanup_and_return "$WORKTREE_PATH" "$CREATED_WORKTREE"
+else
+    handle_dirty_worktree "$WORKTREE_PATH" "$CREATED_WORKTREE"
+fi
