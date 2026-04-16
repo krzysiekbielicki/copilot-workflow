@@ -4,7 +4,6 @@ set -euo pipefail
 ORIGINAL_DIR=$(pwd)
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
-COPILOT_ARGS=("$@")
 
 # ── Arrow-key menu ────────────────────────────────────────────────────────────
 # Usage: menu <result_var> <prompt> <option1> <option2> ...
@@ -65,10 +64,13 @@ cleanup_and_return() {
 
     cd "$ORIGINAL_DIR"
 
-    if [[ "$created" == true ]]; then
-        echo "Removing worktree: $worktree_path"
-        git worktree remove --force "$worktree_path"
+    if [[ "$created" == false ]]; then
+        echo "Worktree at $worktree_path preserved (not created by this session)."
+        return
     fi
+
+    echo "Removing worktree: $worktree_path"
+    git worktree remove --force "$worktree_path"
 
     if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
         local _switch_opts=("Yes, switch to $CHOSEN_BRANCH" "No, stay on $current_branch")
@@ -126,7 +128,7 @@ handle_dirty_worktree() {
 # ── No git repo → just run copilot ──────────────────────────────────────────
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
     echo "Not inside a git repository — launching copilot directly."
-    copilot "${COPILOT_ARGS[@]-}"
+    copilot "$@"
     exit 0
 fi
 
@@ -134,104 +136,122 @@ fi
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 CHOSEN_BRANCH=""
 
-# ── Branch menu: paginated list + inline text input on last item ──────────────
-# Sets CHOSEN_BRANCH. Returns via MANUAL: prefix for typed names.
+# ── Branch chooser: filter-as-you-type + arrow navigation ────────────────────
+# Input row is always first. Typing filters branches below and refocuses input.
+# Arrow keys navigate without clearing the filter. Enter on input row uses the
+# typed text as the branch name (MANUAL: prefix); Enter on a branch row
+# selects that branch.
 _branch_menu() {
     local _var="$1"; shift
     local _prompt="$1"; shift
-    local _regular_opts=("$@")
-    # Manual input is always the last virtual item
-    local _all_opts=("${_regular_opts[@]}" "Enter branch name manually")
-    local _n=${#_all_opts[@]}
-    local _manual_idx=$(( _n - 1 ))
-    local _idx=0 _input="" _in_input=false
+    local _all_branches=("$@")
+
+    local _input=""
+    local _idx=0        # 0 = input row; 1..n = branch rows
     local _key _esc=$'\033'
+    local _filtered=()
+    local _visible=10
+    local _prev_lines=1
 
-    tput civis 2>/dev/null
-
-    _bm_render() {
-        for (( i=0; i<_n; i++ )); do
-            if (( i == _idx )); then
-                if (( i == _manual_idx )); then
-                    if $_in_input; then
-                        printf "\r\033[2K\033[36m❯ %s\033[7m \033[0m\n" "$_input"
-                    else
-                        printf "\r\033[2K\033[36m❯ Enter branch name manually\033[0m\n"
-                    fi
-                else
-                    printf "\r\033[2K\033[36m❯ %s\033[0m\n" "${_all_opts[$i]}"
-                fi
-            else
-                if (( i == _manual_idx )); then
-                    printf "\r\033[2K  Enter branch name manually\n"
-                else
-                    printf "\r\033[2K  %s\n" "${_all_opts[$i]}"
-                fi
+    _bm_filter() {
+        _filtered=()
+        local b
+        for b in "${_all_branches[@]+"${_all_branches[@]}"}"; do
+            if [[ -z "$_input" || "$b" == *"$_input"* ]]; then
+                _filtered+=("$b")
             fi
         done
+        local _max=${#_filtered[@]}
+        (( _idx > _max )) && _idx=$_max || true
     }
 
-    _bm_go_to() {
-        _idx="$1"
-        if (( _idx == _manual_idx )); then
-            _in_input=true
+    _bm_count_lines() {
+        local _nf=${#_filtered[@]}
+        local _show=$(( _nf < _visible ? _nf : _visible ))
+        _prev_lines=$(( _show + 1 + ( _nf > _visible ? 1 : 0 ) ))
+    }
+
+    _bm_render() {
+        local _nf=${#_filtered[@]}
+        local _show=$(( _nf < _visible ? _nf : _visible ))
+        if (( _idx == 0 )); then
+            if [[ -z "$_input" ]]; then
+                printf "\r\033[2K\033[36m❯ \033[2mbranch name\033[22m\033[7m \033[0m\n"
+            else
+                printf "\r\033[2K\033[36m❯ %s\033[7m \033[0m\n" "$_input"
+            fi
         else
-            _in_input=false
-            _input=""
+            if [[ -z "$_input" ]]; then
+                printf "\r\033[2K  \033[2mbranch name\033[0m\n"
+            else
+                printf "\r\033[2K  \033[1m%s\033[0m\n" "$_input"
+            fi
+        fi
+        for (( i=0; i<_show; i++ )); do
+            if (( _idx == i + 1 )); then
+                printf "\r\033[2K\033[36m❯ %s\033[0m\n" "${_filtered[$i]}"
+            else
+                printf "\r\033[2K  %s\n" "${_filtered[$i]}"
+            fi
+        done
+        if (( _nf > _visible )); then
+            printf "\r\033[2K  \033[2m… %d more (keep typing to filter)\033[0m\n" "$(( _nf - _visible ))"
         fi
     }
 
+    tput civis 2>/dev/null
     printf "\033[1m%s\033[0m\n" "$_prompt"
+    _bm_filter
     _bm_render
+    _bm_count_lines
 
     while true; do
-        if $_in_input; then
-            IFS= read -rsn1 _key
-            if [[ "$_key" == "$_esc" ]]; then
-                read -rsn2 -t 1 _key || true
-                case "$_key" in
-                    '[A') _bm_go_to $(( _manual_idx > 0 ? _manual_idx - 1 : 0 )) ;;
-                    '[B') _bm_go_to 0 ;;
-                esac
-            elif [[ "$_key" == '' ]]; then
-                [[ -n "$_input" ]] && break
-                continue
-            elif [[ "$_key" == $'\x7f' || "$_key" == $'\b' ]]; then
-                [[ -n "$_input" ]] && _input="${_input%?}"
-            elif [[ "$_key" =~ ^[[:print:]]$ ]]; then
-                _input+="$_key"
-            else
-                continue
+        IFS= read -rsn1 _key
+        if [[ "$_key" == "$_esc" ]]; then
+            read -rsn2 -t 1 _key || true
+            case "$_key" in
+                '[A')  (( _idx > 0 )) && (( _idx-- )) || true ;;
+                '[B')
+                    local _max=${#_filtered[@]}
+                    (( _idx < _max )) && (( _idx++ )) || true ;;
+            esac
+        elif [[ "$_key" == '' ]]; then
+            if (( _idx == 0 )); then
+                [[ -n "$_input" ]] || continue  # require non-empty to confirm as new branch
             fi
+            break
+        elif [[ "$_key" == $'\x7f' || "$_key" == $'\b' ]]; then
+            if [[ -n "$_input" ]]; then
+                _input="${_input%?}"
+                _idx=0
+                _bm_filter
+            fi
+        elif [[ "$_key" =~ ^[[:print:]]$ ]]; then
+            _input+="$_key"
+            _idx=0
+            _bm_filter
         else
-            IFS= read -rsn1 _key
-            if [[ "$_key" == "$_esc" ]]; then
-                read -rsn2 -t 1 _key || true
-                case "$_key" in
-                    '[A') _bm_go_to $(( (_idx - 1 + _n) % _n )) ;;
-                    '[B') _bm_go_to $(( (_idx + 1) % _n )) ;;
-                esac
-            elif [[ "$_key" == '' ]]; then
-                break  # Enter — cursor stays after last render
-            else
-                continue
-            fi
+            continue
         fi
-        tput cuu "$_n" 2>/dev/null
+        tput cuu "$_prev_lines" 2>/dev/null
+        printf '\033[J'   # erase from cursor to end of screen (handles shrinking lists)
         _bm_render
+        _bm_count_lines
     done
 
     tput cnorm 2>/dev/null
-    tput cuu $(( _n + 1 )) 2>/dev/null
-    for (( i=0; i < _n + 1; i++ )); do printf "\r\033[2K\n"; done
-    tput cuu $(( _n + 1 )) 2>/dev/null
+    local _total=$(( _prev_lines + 1 ))
+    tput cuu "$_total" 2>/dev/null
+    for (( i=0; i<_total; i++ )); do printf "\r\033[2K\n"; done
+    tput cuu "$_total" 2>/dev/null
 
-    if (( _idx == _manual_idx )); then
+    if (( _idx == 0 )); then
         printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "$_input"
         printf -v "$_var" 'MANUAL:%s' "$_input"
     else
-        printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "${_all_opts[$_idx]}"
-        printf -v "$_var" '%s' "${_all_opts[$_idx]}"
+        local _chosen="${_filtered[$(( _idx - 1 ))]}"
+        printf "\r\033[2K\033[1m%s\033[0m \033[36m%s\033[0m\n" "$_prompt" "$_chosen"
+        printf -v "$_var" '%s' "$_chosen"
     fi
 }
 
@@ -241,37 +261,21 @@ choose_branch() {
         [[ "$b" != "$current_branch" ]] && all_branches+=("$b")
     done < <(git branch --sort=-committerdate --format='%(refname:short)' 2>/dev/null)
 
-    local page=0
-    local page_size=10
+    local result=""
+    _branch_menu result "Select branch:" ${all_branches[@]+"${all_branches[@]}"}
 
-    while true; do
-        local start=$(( page * page_size ))
-        local page_branches=("${all_branches[@]:$start:$page_size}")
-        local options=("${page_branches[@]}")
-        # Only show ">> next" when this page is full AND more branches exist
-        if [[ ${#page_branches[@]} -eq $page_size && ${#all_branches[@]} -gt $(( start + page_size )) ]]; then
-            options+=(">> next")
-        fi
-
-        local result=""
-        _branch_menu result "Select branch:" "${options[@]}"
-
-        case "$result" in
-            ">> next") (( page++ )) || true ;;
-            MANUAL:*)
-                CHOSEN_BRANCH="${result#MANUAL:}"
-                break
-                ;;
-            "")
-                echo "No branch selected. Exiting."
-                exit 1
-                ;;
-            *)
-                CHOSEN_BRANCH="$result"
-                break
-                ;;
-        esac
-    done
+    case "$result" in
+        MANUAL:*)
+            CHOSEN_BRANCH="${result#MANUAL:}"
+            ;;
+        "")
+            echo "No branch selected. Exiting."
+            exit 1
+            ;;
+        *)
+            CHOSEN_BRANCH="$result"
+            ;;
+    esac
 }
 
 _worktree_choice=""
@@ -283,7 +287,7 @@ case "$_worktree_choice" in
     "No, run Copilot here")
         echo "Launching copilot in current directory..."
         echo
-        copilot "${COPILOT_ARGS[@]-}" || true
+        copilot "$@" || true
         exit 0
         ;;
     "Yes, use a different branch")
@@ -354,7 +358,7 @@ echo "Launching copilot..."
 echo
 
 # ── Run copilot ──────────────────────────────────────────────────────────────
-copilot "${COPILOT_ARGS[@]-}" || true  # don't exit on non-zero exit from copilot
+copilot "$@" || true  # don't exit on non-zero exit from copilot
 
 # ── Post-copilot cleanup ─────────────────────────────────────────────────────
 cd "$WORKTREE_PATH"
