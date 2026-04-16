@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'tput cnorm 2>/dev/null' EXIT
+
 ORIGINAL_DIR=$(pwd)
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
