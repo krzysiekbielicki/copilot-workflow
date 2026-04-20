@@ -360,7 +360,7 @@ echo "Launching copilot..."
 echo
 
 # ── Run copilot ──────────────────────────────────────────────────────────────
-copilot "$@" || true  # don't exit on non-zero exit from copilot
+copilot --add-dir "$WORKTREE_PATH" "$@" || true  # don't exit on non-zero exit from copilot
 
 # ── Post-copilot cleanup ─────────────────────────────────────────────────────
 cd "$WORKTREE_PATH"
