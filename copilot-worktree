@@ -314,11 +314,12 @@ choose_branch() {
 
                 if [[ "$sanitized" != "$raw_name" ]]; then
                     local _confirm=""
+                    echo "Proposed name: $sanitized"
                     menu _confirm "Invalid characters detected. Use sanitized name?" \
-                        "Yes, use \"$sanitized\"" \
+                        "Yes, use proposed name" \
                         "No, let me type again"
                     case "$_confirm" in
-                        "Yes, use \"$sanitized\"")
+                        "Yes, use proposed name")
                             CHOSEN_BRANCH="$sanitized"
                             ;;
                         "No, let me type again")
