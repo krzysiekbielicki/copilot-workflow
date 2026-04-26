@@ -257,27 +257,88 @@ _branch_menu() {
     fi
 }
 
+sanitize_branch_name() {
+    local name="$1"
+    # Replace spaces with hyphens
+    name="${name// /-}"
+    # Replace backslashes with forward slashes
+    name="${name//\\//}"
+    # Remove forbidden git-ref characters: ~ ^ : ? * [ ] control-chars DEL
+    name=$(printf '%s' "$name" | tr -d '[:cntrl:]' | sed 's/[]~^:?*\[\\]//g')
+    # Remove .. sequences
+    while [[ "$name" == *..* ]]; do name="${name/../.}"; done
+    # Remove @{…} sequences (forbidden in git refs)
+    name=$(printf '%s' "$name" | sed 's/@{[^}]*}//g')
+    # Collapse consecutive slashes
+    while [[ "$name" == *//* ]]; do name="${name/\/\///}"; done
+    # Collapse consecutive hyphens
+    while [[ "$name" == *--* ]]; do name="${name/--/-}"; done
+    # Per-component cleanup: strip .lock suffix and leading dots from each path component
+    local IFS='/' components=() c cleaned=()
+    read -ra components <<< "$name"
+    for c in "${components[@]}"; do
+        # Remove .lock suffix from component (repeatedly for .lock.lock etc.)
+        while [[ "$c" == *.lock ]]; do c="${c%.lock}"; done
+        # Strip leading dots from component
+        while [[ "$c" == .* ]]; do c="${c#.}"; done
+        [[ -n "$c" ]] && cleaned+=("$c")
+    done
+    name=$(printf '%s\n' "${cleaned[*]}")
+    # Strip leading/trailing dots, hyphens, slashes (all of them)
+    while [[ "$name" == [./-]* ]]; do name="${name#[./-]}"; done
+    while [[ "$name" == *[./-] ]]; do name="${name%[./-]}"; done
+
+    printf '%s' "$name"
+}
+
 choose_branch() {
     local all_branches=()
     while IFS= read -r b; do
         [[ "$b" != "$current_branch" ]] && all_branches+=("$b")
     done < <(git branch --sort=-committerdate --format='%(refname:short)' 2>/dev/null)
 
-    local result=""
-    _branch_menu result "Select branch:" ${all_branches[@]+"${all_branches[@]}"}
+    while true; do
+        local result=""
+        _branch_menu result "Select branch:" ${all_branches[@]+"${all_branches[@]}"}
 
-    case "$result" in
-        MANUAL:*)
-            CHOSEN_BRANCH="${result#MANUAL:}"
-            ;;
-        "")
-            echo "No branch selected. Exiting."
-            exit 1
-            ;;
-        *)
-            CHOSEN_BRANCH="$result"
-            ;;
-    esac
+        case "$result" in
+            MANUAL:*)
+                local raw_name="${result#MANUAL:}"
+                local sanitized
+                sanitized=$(sanitize_branch_name "$raw_name")
+
+                if [[ -z "$sanitized" ]] || ! git check-ref-format "refs/heads/$sanitized" 2>/dev/null; then
+                    echo "Branch name is invalid after sanitization. Please try again."
+                    continue
+                fi
+
+                if [[ "$sanitized" != "$raw_name" ]]; then
+                    local _confirm=""
+                    menu _confirm "Invalid characters detected. Use sanitized name?" \
+                        "Yes, use \"$sanitized\"" \
+                        "No, let me type again"
+                    case "$_confirm" in
+                        "Yes, use \"$sanitized\"")
+                            CHOSEN_BRANCH="$sanitized"
+                            ;;
+                        "No, let me type again")
+                            continue
+                            ;;
+                    esac
+                else
+                    CHOSEN_BRANCH="$raw_name"
+                fi
+                ;;
+            "")
+                echo "No branch selected. Exiting."
+                exit 1
+                ;;
+            *)
+                CHOSEN_BRANCH="$result"
+                ;;
+        esac
+        break
+    done
 }
 
 _worktree_choice=""
