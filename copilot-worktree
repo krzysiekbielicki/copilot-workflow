@@ -273,11 +273,20 @@ sanitize_branch_name() {
     while [[ "$name" == *//* ]]; do name="${name/\/\///}"; done
     # Collapse consecutive hyphens
     while [[ "$name" == *--* ]]; do name="${name/--/-}"; done
-    # Remove .lock suffix
-    name="${name%.lock}"
-    # Strip leading/trailing dots, hyphens, slashes
-    name="${name#[./-]}"
-    name="${name%[./-]}"
+    # Per-component cleanup: strip .lock suffix and leading dots from each path component
+    local IFS='/' components=() c cleaned=()
+    read -ra components <<< "$name"
+    for c in "${components[@]}"; do
+        # Remove .lock suffix from component (repeatedly for .lock.lock etc.)
+        while [[ "$c" == *.lock ]]; do c="${c%.lock}"; done
+        # Strip leading dots from component
+        while [[ "$c" == .* ]]; do c="${c#.}"; done
+        [[ -n "$c" ]] && cleaned+=("$c")
+    done
+    name=$(printf '%s\n' "${cleaned[*]}")
+    # Strip leading/trailing dots, hyphens, slashes (all of them)
+    while [[ "$name" == [./-]* ]]; do name="${name#[./-]}"; done
+    while [[ "$name" == *[./-] ]]; do name="${name%[./-]}"; done
 
     printf '%s' "$name"
 }
@@ -298,8 +307,8 @@ choose_branch() {
                 local sanitized
                 sanitized=$(sanitize_branch_name "$raw_name")
 
-                if [[ -z "$sanitized" ]]; then
-                    echo "Branch name is empty after sanitization. Please try again."
+                if [[ -z "$sanitized" ]] || ! git check-ref-format "refs/heads/$sanitized" 2>/dev/null; then
+                    echo "Branch name is invalid after sanitization. Please try again."
                     continue
                 fi
 
