@@ -37,10 +37,28 @@ EOF
 
 check_gum_installed
 
-# ── Helper: Check if branch exists on remote ──────────────────────────────────
-branch_exists_on_remote() {
+# ── Helper: Check if all commits of a branch are on remote ──────────────────
+# Returns 0 (true) if all commits in the branch exist somewhere on the remote
+# (they may have been merged to other branches)
+all_commits_on_remote() {
     local branch_name="$1"
-    git ls-remote origin "$branch_name" >/dev/null 2>&1
+    # Get the commit hash of the branch
+    local branch_commit
+    branch_commit=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
+    
+    # Check if this commit exists in the remote (e.g., in main, develop, or any other ref)
+    git fetch origin --quiet 2>/dev/null || true
+    git cat-file -e "$branch_commit" 2>/dev/null || return 1
+    
+    # Verify the commit is actually on remote by checking if it's reachable from origin branches
+    git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
+    
+    # Also check against other common branches
+    for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null); do
+        git merge-base --is-ancestor "$branch_commit" "$ref" 2>/dev/null && return 0
+    done
+    
+    return 1
 }
 
 # ── Arrow-key menu using gum ──────────────────────────────────────────────────
@@ -159,11 +177,11 @@ confirm_destructive_operation() {
     local branch_exists="${2:-true}"
     local branch_name="${3:-}"
     
-    # For existing branches, check if they're safely backed up on remote
+    # For existing branches, check if all commits are on remote
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
-        # If branch exists on remote, it's safely backed up – skip confirmation
-        if branch_exists_on_remote "$branch_name"; then
-            echo "Branch is safely on remote. Deleting locally..."
+        # If all commits are on remote (even if branch was merged and deleted), skip confirmation
+        if all_commits_on_remote "$branch_name"; then
+            echo "All commits exist on remote. Deleting locally..."
             return 0
         fi
         
