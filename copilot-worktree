@@ -96,71 +96,281 @@ cleanup_and_return() {
     esac
 }
 
-handle_dirty_worktree() {
-    local worktree_path="$1"
-    local created="$2"
-
-    echo
-    echo "Worktree has uncommitted or untracked changes:"
-    git status --short
-    echo
-
-    local _dirty_opts=("Stage all and commit" "Exit (keep worktree)" "Stay in worktree without committing")
-    if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-        _dirty_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+# ── Helper: Check if worktree has uncommitted changes ─────────────────────────
+is_worktree_dirty() {
+    # Check for uncommitted changes: staged, unstaged, or untracked files
+    if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
+        return 1  # clean
+    else
+        return 0  # dirty
     fi
-    local _dirty_choice
-    menu _dirty_choice "What would you like to do?" "${_dirty_opts[@]}"
-
-    case "$_dirty_choice" in
-        "Stage all and commit")
-            git add -A
-            read -rp "Commit message: " commit_msg
-            git commit -m "$commit_msg"
-            post_session_menu "$worktree_path" "$created"
-            ;;
-        "Exit (keep worktree)")
-            echo "Leaving worktree intact at: $worktree_path"
-            exit 0
-            ;;
-        "Stay in worktree without committing")
-            echo "Staying in worktree with uncommitted changes at: $worktree_path"
-            exit 0
-            ;;
-        "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
-            cd "$ORIGINAL_DIR"
-            git worktree remove --force "$worktree_path"
-            git branch -D "$CHOSEN_BRANCH"
-            echo "Branch $CHOSEN_BRANCH deleted."
-            ;;
-    esac
 }
 
-post_session_menu() {
+# ── Helper: Confirm destructive operations with user ──────────────────────────
+confirm_destructive_operation() {
+    local operation="$1"
+    local branch_exists="${2:-true}"
+    local branch_name="${3:-}"
+    
+    echo
+    echo "⚠️  $operation"
+    echo
+    
+    # For existing branches, show branch info
+    if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
+        echo "Branch Information:"
+        git log -1 --oneline "$branch_name" | sed 's/^/  /'
+        echo
+        echo "⚠️  Deleting EXISTING branch: You won't be able to recover it unless pushed to remote."
+        echo
+        local _confirm=""
+        menu _confirm "Delete $branch_name permanently?" \
+            "Yes, delete permanently" \
+            "No, keep it"
+    else
+        # For new branches, simpler message
+        echo "This will delete the branch and remove the worktree. This cannot be undone."
+        echo
+        local _confirm=""
+        menu _confirm "Proceed?" \
+            "Yes, drop it" \
+            "No, keep it"
+    fi
+    
+    if [[ "$_confirm" =~ ^Yes ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# ── Helper: Remove worktree directory ────────────────────────────────────────
+cleanup_worktree() {
+    local worktree_path="$1"
+    local original_dir="$2"
+    
+    cd "$original_dir"
+    if [[ -d "$worktree_path" ]]; then
+        echo "Removing worktree: $worktree_path"
+        git worktree remove --force "$worktree_path"
+    fi
+    
+    return 0
+}
+
+# ── Helper: Push changes and optionally create PR ─────────────────────────────
+push_and_cleanup() {
+    local worktree_path="$1"
+    local original_dir="$2"
+    local branch_name="$3"
+    
+    # Stage all changes
+    echo "Staging all changes..."
+    git add -A
+    
+    # Prompt for commit message
+    read -rp "Commit message: " commit_msg
+    if [[ -z "$commit_msg" ]]; then
+        echo "Commit message cannot be empty. Aborting."
+        return 1
+    fi
+    
+    # Commit changes
+    echo "Committing changes..."
+    git commit -m "$commit_msg"
+    
+    # Push to origin
+    echo "Pushing to origin/$branch_name..."
+    if ! git push -u origin "$branch_name"; then
+        echo "Push failed. Aborting cleanup."
+        return 1
+    fi
+    
+    # Offer to create a pull request if gh CLI is available
+    if command -v gh &> /dev/null; then
+        echo
+        local _pr_choice=""
+        menu _pr_choice "Create a pull request for $branch_name?" \
+            "Yes, create PR" \
+            "No, skip PR creation"
+        
+        if [[ "$_pr_choice" == "Yes, create PR" ]]; then
+            echo "Creating pull request..."
+            if gh pr create --fill; then
+                echo "✓ Pull request created successfully!"
+            else
+                local _pr_status=$?
+                if (( _pr_status == 1 )); then
+                    echo "⚠ PR creation cancelled or user not authenticated."
+                else
+                    echo "⚠ PR creation failed (exit code: $_pr_status)."
+                fi
+                echo "Note: Branch has been pushed successfully. You can create the PR manually later."
+            fi
+        fi
+    fi
+    
+    # Clean up the worktree
+    cleanup_worktree "$worktree_path" "$original_dir"
+    
+    return 0
+}
+
+# ── Unified session cleanup menu ────────────────────────────────────────────
+# Auto-detects dirty/clean state and presents appropriate menu options.
+# Parameters:
+#   $1: worktree_path
+#   $2: created (true/false)
+#   $3: optional forced state ('dirty' or 'clean') for testing
+session_cleanup_menu() {
     local worktree_path="$1"
     local created="$2"
-
-    local _menu_opts=("Yes, switch to $CHOSEN_BRANCH" "No, stay on $current_branch" "Stay in worktree")
-    if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-        _menu_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+    local forced_state="${3:-}"  # optional: 'dirty' or 'clean' for testing
+    
+    # Determine if worktree is dirty or clean
+    local is_dirty=false
+    if [[ -n "$forced_state" ]]; then
+        # For testing: use forced state
+        [[ "$forced_state" == "dirty" ]] && is_dirty=true
+    else
+        # Auto-detect: call is_worktree_dirty (returns 0 if dirty)
+        if is_worktree_dirty; then
+            is_dirty=true
+        fi
     fi
-    local _menu_choice
-    menu _menu_choice "What next?" "${_menu_opts[@]}"
-
-    case "$_menu_choice" in
-        "Yes, switch to $CHOSEN_BRANCH")
-            cleanup_and_return "$worktree_path" "$created" "switch"
-            ;;
-        "No, stay on $current_branch")
-            cleanup_and_return "$worktree_path" "$created" "switch"
-            ;;
-        "Stay in worktree")
-            cleanup_and_return "$worktree_path" "$created" "stay"
-            ;;
-        "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
-            cleanup_and_return "$worktree_path" "$created" "delete"
-            ;;
-    esac
+    
+    if [[ "$is_dirty" == true ]]; then
+        # ── DIRTY WORKTREE MENU ──────────────────────────────────────────────
+        echo
+        echo "Worktree has uncommitted changes:"
+        git status --short
+        echo
+        
+        # Build dirty menu options
+        local _dirty_opts=(
+            "Keep worktree with changes"
+            "Commit changes"
+            "Push and clean up"
+        )
+        
+        # Add delete option based on BRANCH_EXISTS
+        if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+            _dirty_opts+=("Drop all changes")
+        else
+            _dirty_opts+=("Delete branch and drop changes")
+        fi
+        
+        local _dirty_choice
+        menu _dirty_choice "Worktree has uncommitted changes. What would you like to do?" "${_dirty_opts[@]}"
+        
+        case "$_dirty_choice" in
+            "Keep worktree with changes")
+                echo "Staying in worktree with uncommitted changes at: $worktree_path"
+                exit 0
+                ;;
+            "Commit changes")
+                git add -A
+                read -rp "Commit message: " commit_msg
+                if [[ -z "$commit_msg" ]]; then
+                    echo "Commit cancelled."
+                    # Re-show menu
+                    session_cleanup_menu "$worktree_path" "$created" "$forced_state"
+                    return
+                fi
+                git commit -m "$commit_msg"
+                echo "Changes committed successfully."
+                # After commit, show clean menu
+                session_cleanup_menu "$worktree_path" "$created" "clean"
+                ;;
+            "Push and clean up")
+                push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
+                cleanup_and_return "$worktree_path" "$created" "switch"
+                ;;
+            "Drop all changes")
+                # Destructive: confirm first
+                if confirm_destructive_operation "About to drop all changes and delete the branch." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
+                    cd "$ORIGINAL_DIR"
+                    git worktree remove --force "$worktree_path"
+                    if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+                        git branch -D "$CHOSEN_BRANCH"
+                        echo "Branch $CHOSEN_BRANCH deleted."
+                    fi
+                    echo "Worktree cleaned up."
+                    exit 0
+                else
+                    echo "Operation cancelled. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "dirty"
+                fi
+                ;;
+            "Delete branch and drop changes")
+                # Destructive: confirm first
+                if confirm_destructive_operation "About to drop all changes and delete branch $CHOSEN_BRANCH." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
+                    cd "$ORIGINAL_DIR"
+                    git worktree remove --force "$worktree_path"
+                    git branch -D "$CHOSEN_BRANCH"
+                    echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
+                    exit 0
+                else
+                    echo "Operation cancelled. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "dirty"
+                fi
+                ;;
+        esac
+    else
+        # ── CLEAN WORKTREE MENU ──────────────────────────────────────────────
+        # Build clean menu options
+        local _clean_opts=(
+            "Stay in worktree"
+            "Clean up worktree"
+        )
+        
+        # Add delete option based on BRANCH_EXISTS
+        if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+            _clean_opts+=("Drop branch and clean up")
+        else
+            _clean_opts+=("Delete branch and clean up")
+        fi
+        
+        local _clean_choice
+        menu _clean_choice "What next?" "${_clean_opts[@]}"
+        
+        case "$_clean_choice" in
+            "Stay in worktree")
+                echo "Staying in worktree at: $worktree_path"
+                exit 0
+                ;;
+            "Clean up worktree")
+                cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                cleanup_and_return "$worktree_path" "$created" "switch"
+                ;;
+            "Drop branch and clean up")
+                # Destructive: confirm first
+                if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
+                    cd "$ORIGINAL_DIR"
+                    git worktree remove --force "$worktree_path"
+                    git branch -D "$CHOSEN_BRANCH"
+                    echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
+                    exit 0
+                else
+                    echo "Operation cancelled. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "clean"
+                fi
+                ;;
+            "Delete branch and clean up")
+                # Destructive: confirm first
+                if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
+                    cd "$ORIGINAL_DIR"
+                    git worktree remove --force "$worktree_path"
+                    git branch -D "$CHOSEN_BRANCH"
+                    echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
+                    exit 0
+                else
+                    echo "Operation cancelled. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "clean"
+                fi
+                ;;
+        esac
+    fi
 }
 
 # ── No git repo → just run copilot ──────────────────────────────────────────
@@ -351,14 +561,14 @@ choose_branch() {
                 if [[ "$sanitized" != "$raw_name" ]]; then
                     local _confirm=""
                     echo "Proposed name: $sanitized"
-                    menu _confirm "Invalid characters detected. Use sanitized name?" \
-                        "Yes, use proposed name" \
-                        "No, let me type again"
+                    menu _confirm "Invalid characters detected. What would you like to do?" \
+                        "Use proposed name" \
+                        "Let me type again"
                     case "$_confirm" in
-                        "Yes, use proposed name")
+                        "Use proposed name")
                             CHOSEN_BRANCH="$sanitized"
                             ;;
-                        "No, let me type again")
+                        "Let me type again")
                             continue
                             ;;
                     esac
@@ -379,18 +589,18 @@ choose_branch() {
 }
 
 _worktree_choice=""
-menu _worktree_choice "Run Copilot in a different branch (worktree)?" \
-    "No, run Copilot here" \
-    "Yes, use a different branch"
+menu _worktree_choice "Run Copilot in a different branch?" \
+    "Run Copilot here" \
+    "Use a different branch"
 
 case "$_worktree_choice" in
-    "No, run Copilot here")
+    "Run Copilot here")
         echo "Launching copilot in current directory..."
         echo
         copilot "$@" || true
         exit 0
         ;;
-    "Yes, use a different branch")
+    "Use a different branch")
         choose_branch
         ;;
 esac
@@ -427,18 +637,18 @@ if [[ -e "$WORKTREE_PATH" ]]; then
     echo "Directory already exists: $WORKTREE_PATH"
     _exist_choice=""
     menu _exist_choice "What would you like to do?" \
-        "Use existing worktree directory" \
-        "Add timestamp suffix" \
+        "Use existing directory" \
+        "Create new with timestamp" \
         "Exit"
     case "$_exist_choice" in
         "Exit")
             exit 0
             ;;
-        "Use existing worktree directory")
+        "Use existing directory")
             CREATED_WORKTREE=false
             cd "$WORKTREE_PATH"
             ;;
-        "Add timestamp suffix")
+        "Create new with timestamp")
             timestamp=$(date +%Y%m%d%H%M%S)
             worktree_name="$current_dir_name-$CHOSEN_BRANCH-$timestamp"
             WORKTREE_PATH="$parent_dir/$worktree_name"
@@ -462,9 +672,4 @@ copilot --add-dir "$WORKTREE_PATH" "$@" || true  # don't exit on non-zero exit f
 
 # ── Post-copilot cleanup ─────────────────────────────────────────────────────
 cd "$WORKTREE_PATH"
-
-if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
-    post_session_menu "$WORKTREE_PATH" "$CREATED_WORKTREE"
-else
-    handle_dirty_worktree "$WORKTREE_PATH" "$CREATED_WORKTREE"
-fi
+session_cleanup_menu "$WORKTREE_PATH" "$CREATED_WORKTREE"
