@@ -530,7 +530,6 @@ case "$_worktree_choice" in
         echo
         copilot "$@" || true
         # If we're inside a secondary worktree, show cleanup menu
-        local _current_toplevel
         _current_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
         if [[ -n "$_current_toplevel" && "$_current_toplevel" != "$ORIGINAL_DIR" ]]; then
             CHOSEN_BRANCH="$current_branch"
