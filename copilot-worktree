@@ -529,7 +529,18 @@ case "$_worktree_choice" in
         echo "Launching copilot in current directory..."
         echo
         copilot "$@" || true
-        exit 0
+        # If we're inside a secondary worktree, show cleanup menu
+        local _current_toplevel
+        _current_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [[ -n "$_current_toplevel" && "$_current_toplevel" != "$ORIGINAL_DIR" ]]; then
+            CHOSEN_BRANCH="$current_branch"
+            BRANCH_EXISTS=true
+            WORKTREE_PATH="$_current_toplevel"
+            cd "$WORKTREE_PATH"
+            session_cleanup_menu "$WORKTREE_PATH" false
+        else
+            exit 0
+        fi
         ;;
     "Use a different branch")
         choose_branch
