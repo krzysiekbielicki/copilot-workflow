@@ -96,6 +96,55 @@ is_worktree_dirty() {
     fi
 }
 
+# ── Helper: Check if branch has unpushed commits ─────────────────────────────
+has_unpushed_commits() {
+    local upstream
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || true
+    if [[ -z "$upstream" ]]; then
+        # No upstream set – any local commits count as unpushed
+        [[ -n "$(git log --oneline -1 2>/dev/null)" ]] && return 0 || return 1
+    fi
+    # Upstream exists – check if there are commits ahead
+    [[ -n "$(git log --oneline "$upstream..HEAD" 2>/dev/null)" ]]
+}
+
+# ── Helper: Push branch and optionally create PR ─────────────────────────────
+push_branch() {
+    local branch_name="$1"
+
+    echo "Pushing to origin/$branch_name..."
+    if ! git push -u origin "$branch_name"; then
+        echo "Push failed."
+        return 1
+    fi
+
+    # Offer to create a pull request if gh CLI is available
+    if command -v gh &> /dev/null; then
+        echo
+        local _pr_choice=""
+        menu _pr_choice "Create a pull request for $branch_name?" \
+            "Yes, create PR" \
+            "No, skip PR creation"
+
+        if [[ "$_pr_choice" == "Yes, create PR" ]]; then
+            echo "Creating pull request..."
+            if gh pr create --fill; then
+                echo "✓ Pull request created successfully!"
+            else
+                local _pr_status=$?
+                if (( _pr_status == 1 )); then
+                    echo "⚠ PR creation cancelled or user not authenticated."
+                else
+                    echo "⚠ PR creation failed (exit code: $_pr_status)."
+                fi
+                echo "Note: Branch has been pushed successfully. You can create the PR manually later."
+            fi
+        fi
+    fi
+
+    return 0
+}
+
 # ── Helper: Confirm destructive operations with user ──────────────────────────
 confirm_destructive_operation() {
     local operation="$1"
@@ -169,35 +218,10 @@ push_and_cleanup() {
     echo "Committing changes..."
     git commit -m "$commit_msg"
     
-    # Push to origin
-    echo "Pushing to origin/$branch_name..."
-    if ! git push -u origin "$branch_name"; then
-        echo "Push failed. Aborting cleanup."
+    # Push and offer PR
+    if ! push_branch "$branch_name"; then
+        echo "Aborting cleanup."
         return 1
-    fi
-    
-    # Offer to create a pull request if gh CLI is available
-    if command -v gh &> /dev/null; then
-        echo
-        local _pr_choice=""
-        menu _pr_choice "Create a pull request for $branch_name?" \
-            "Yes, create PR" \
-            "No, skip PR creation"
-        
-        if [[ "$_pr_choice" == "Yes, create PR" ]]; then
-            echo "Creating pull request..."
-            if gh pr create --fill; then
-                echo "✓ Pull request created successfully!"
-            else
-                local _pr_status=$?
-                if (( _pr_status == 1 )); then
-                    echo "⚠ PR creation cancelled or user not authenticated."
-                else
-                    echo "⚠ PR creation failed (exit code: $_pr_status)."
-                fi
-                echo "Note: Branch has been pushed successfully. You can create the PR manually later."
-            fi
-        fi
     fi
     
     # Clean up the worktree
@@ -313,15 +337,15 @@ session_cleanup_menu() {
         # Build clean menu options
         local _clean_opts=(
             "Stay in worktree"
-            "Remove worktree (keep branch)"
         )
-        
-        # Add delete option based on BRANCH_EXISTS
-        if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-            _clean_opts+=("Remove worktree and delete branch")
-        else
-            _clean_opts+=("Remove worktree and delete branch")
+
+        # Add push option if there are unpushed commits
+        if has_unpushed_commits; then
+            _clean_opts+=("Push and remove worktree")
         fi
+
+        _clean_opts+=("Remove worktree (keep branch)")
+        _clean_opts+=("Remove worktree and delete branch")
         
         local _clean_choice
         menu _clean_choice "What next?" "${_clean_opts[@]}"
@@ -332,23 +356,20 @@ session_cleanup_menu() {
                 cd "$worktree_path"
                 exec "$SHELL"
                 ;;
+            "Push and remove worktree")
+                if push_branch "$CHOSEN_BRANCH"; then
+                    cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                    echo "Worktree removed."
+                    exit 0
+                else
+                    echo "Push failed. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "clean"
+                fi
+                ;;
             "Remove worktree (keep branch)")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                 echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
                 exit 0
-                ;;
-            "Remove worktree and delete branch")
-                # Destructive: confirm first
-                if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
-                    git worktree remove --force "$worktree_path"
-                    git branch -D "$CHOSEN_BRANCH"
-                    echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exit 0
-                else
-                    echo "Operation cancelled. Returning to menu."
-                    session_cleanup_menu "$worktree_path" "$created" "clean"
-                fi
                 ;;
             "Remove worktree and delete branch")
                 # Destructive: confirm first
