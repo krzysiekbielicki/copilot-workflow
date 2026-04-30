@@ -57,7 +57,8 @@ cleanup_and_return() {
     case "$action" in
         stay)
             echo "Staying in worktree at: $worktree_path"
-            exit 0
+            cd "$worktree_path"
+            exec "$SHELL"
             ;;
         delete)
             cd "$ORIGINAL_DIR"
@@ -255,7 +256,8 @@ session_cleanup_menu() {
         case "$_dirty_choice" in
             "Keep worktree with changes")
                 echo "Staying in worktree with uncommitted changes at: $worktree_path"
-                exit 0
+                cd "$worktree_path"
+                exec "$SHELL"
                 ;;
             "Commit changes")
                 git add -A
@@ -326,7 +328,8 @@ session_cleanup_menu() {
         case "$_clean_choice" in
             "Stay in worktree")
                 echo "Staying in worktree at: $worktree_path"
-                exit 0
+                cd "$worktree_path"
+                exec "$SHELL"
                 ;;
             "Clean up worktree")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
