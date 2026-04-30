@@ -37,6 +37,12 @@ EOF
 
 check_gum_installed
 
+# ── Helper: Check if branch exists on remote ──────────────────────────────────
+branch_exists_on_remote() {
+    local branch_name="$1"
+    git ls-remote origin "$branch_name" >/dev/null 2>&1
+}
+
 # ── Arrow-key menu using gum ──────────────────────────────────────────────────
 # Usage: menu <result_var> <prompt> <option1> <option2> ...
 # Sets result_var to the chosen option string.
@@ -153,12 +159,17 @@ confirm_destructive_operation() {
     local branch_exists="${2:-true}"
     local branch_name="${3:-}"
     
-    echo
-    echo "⚠️  $operation"
-    echo
-    
-    # For existing branches, show branch info
+    # For existing branches, check if they're safely backed up on remote
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
+        # If branch is on remote and no unpushed commits, skip confirmation
+        if branch_exists_on_remote "$branch_name" && ! has_unpushed_commits; then
+            echo "Branch is safely on remote. Deleting locally..."
+            return 0
+        fi
+        
+        echo
+        echo "⚠️  $operation"
+        echo
         echo "Branch Information:"
         git log -1 --oneline "$branch_name" | sed 's/^/  /'
         echo
@@ -170,6 +181,9 @@ confirm_destructive_operation() {
             "No, keep it"
     else
         # For new branches, simpler message
+        echo
+        echo "⚠️  $operation"
+        echo
         echo "This will delete the branch and remove the worktree. This cannot be undone."
         echo
         local _confirm=""
