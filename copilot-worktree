@@ -3,7 +3,9 @@ set -euo pipefail
 
 trap 'true' EXIT
 
-ORIGINAL_DIR=$(pwd)
+# Resolve to the main worktree root so we always have a safe directory to return to,
+# even when running from inside a worktree that may get deleted.
+ORIGINAL_DIR=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //' || pwd)
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
 
