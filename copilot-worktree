@@ -63,32 +63,37 @@ menu() {
 cleanup_and_return() {
     local worktree_path="$1"
     local created="$2"
+    local action="${3:-switch}"  # switch, stay, or delete
 
-    cd "$ORIGINAL_DIR"
-
-    if [[ "$created" == false ]]; then
-        echo "Worktree at $worktree_path preserved (not created by this session)."
-        return
-    fi
-
-    echo "Removing worktree: $worktree_path"
-    git worktree remove --force "$worktree_path"
-
-    if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
-        local _switch_opts=("Yes, switch to $CHOSEN_BRANCH" "No, stay on $current_branch")
-        if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-            _switch_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
-        fi
-        local _switch_choice
-        menu _switch_choice "What next?" "${_switch_opts[@]}"
-        case "$_switch_choice" in
-            "Yes, switch to $CHOSEN_BRANCH")
-                git checkout "$CHOSEN_BRANCH" ;;
-            "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+    case "$action" in
+        stay)
+            echo "Staying in worktree at: $worktree_path"
+            return 0
+            ;;
+        delete)
+            cd "$ORIGINAL_DIR"
+            if [[ "$created" == true ]]; then
+                echo "Removing worktree: $worktree_path"
+                git worktree remove --force "$worktree_path"
+            fi
+            if [[ -n "${CHOSEN_BRANCH:-}" && "${BRANCH_EXISTS:-true}" == false ]]; then
                 git branch -D "$CHOSEN_BRANCH"
-                echo "Branch $CHOSEN_BRANCH deleted." ;;
-        esac
-    fi
+                echo "Branch $CHOSEN_BRANCH deleted."
+            fi
+            return 0
+            ;;
+        switch)
+            cd "$ORIGINAL_DIR"
+            if [[ "$created" == true ]]; then
+                echo "Removing worktree: $worktree_path"
+                git worktree remove --force "$worktree_path"
+            fi
+            if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
+                git checkout "$CHOSEN_BRANCH"
+            fi
+            return 0
+            ;;
+    esac
 }
 
 handle_dirty_worktree() {
@@ -100,7 +105,7 @@ handle_dirty_worktree() {
     git status --short
     echo
 
-    local _dirty_opts=("Stage all and commit" "Exit (keep worktree)")
+    local _dirty_opts=("Stage all and commit" "Exit (keep worktree)" "Stay in worktree without committing")
     if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
         _dirty_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
     fi
@@ -112,10 +117,14 @@ handle_dirty_worktree() {
             git add -A
             read -rp "Commit message: " commit_msg
             git commit -m "$commit_msg"
-            cleanup_and_return "$worktree_path" "$created"
+            post_session_menu "$worktree_path" "$created"
             ;;
         "Exit (keep worktree)")
             echo "Leaving worktree intact at: $worktree_path"
+            exit 0
+            ;;
+        "Stay in worktree without committing")
+            echo "Staying in worktree with uncommitted changes at: $worktree_path"
             exit 0
             ;;
         "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
@@ -123,6 +132,33 @@ handle_dirty_worktree() {
             git worktree remove --force "$worktree_path"
             git branch -D "$CHOSEN_BRANCH"
             echo "Branch $CHOSEN_BRANCH deleted."
+            ;;
+    esac
+}
+
+post_session_menu() {
+    local worktree_path="$1"
+    local created="$2"
+
+    local _menu_opts=("Yes, switch to $CHOSEN_BRANCH" "No, stay on $current_branch" "Stay in worktree")
+    if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
+        _menu_opts+=("Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+    fi
+    local _menu_choice
+    menu _menu_choice "What next?" "${_menu_opts[@]}"
+
+    case "$_menu_choice" in
+        "Yes, switch to $CHOSEN_BRANCH")
+            cleanup_and_return "$worktree_path" "$created" "switch"
+            ;;
+        "No, stay on $current_branch")
+            cleanup_and_return "$worktree_path" "$created" "switch"
+            ;;
+        "Stay in worktree")
+            cleanup_and_return "$worktree_path" "$created" "stay"
+            ;;
+        "Delete $CHOSEN_BRANCH branch (drop all changes done in this session)")
+            cleanup_and_return "$worktree_path" "$created" "delete"
             ;;
     esac
 }
@@ -428,7 +464,7 @@ copilot --add-dir "$WORKTREE_PATH" "$@" || true  # don't exit on non-zero exit f
 cd "$WORKTREE_PATH"
 
 if git diff --quiet && git diff --cached --quiet && [[ -z "$(git ls-files --others --exclude-standard)" ]]; then
-    cleanup_and_return "$WORKTREE_PATH" "$CREATED_WORKTREE"
+    post_session_menu "$WORKTREE_PATH" "$CREATED_WORKTREE"
 else
     handle_dirty_worktree "$WORKTREE_PATH" "$CREATED_WORKTREE"
 fi
