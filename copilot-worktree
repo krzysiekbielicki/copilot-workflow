@@ -275,7 +275,8 @@ session_cleanup_menu() {
                 ;;
             "Push and remove worktree")
                 push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
-                cleanup_and_return "$worktree_path" "$created" "switch"
+                echo "Worktree removed."
+                exit 0
                 ;;
             "Discard changes and remove worktree")
                 # Destructive: confirm first
