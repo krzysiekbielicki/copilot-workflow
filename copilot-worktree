@@ -68,7 +68,7 @@ cleanup_and_return() {
     case "$action" in
         stay)
             echo "Staying in worktree at: $worktree_path"
-            return 0
+            exit 0
             ;;
         delete)
             cd "$ORIGINAL_DIR"
