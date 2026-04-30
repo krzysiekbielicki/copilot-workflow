@@ -333,7 +333,8 @@ session_cleanup_menu() {
                 ;;
             "Remove worktree (keep branch)")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
-                cleanup_and_return "$worktree_path" "$created" "switch"
+                echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
+                exit 0
                 ;;
             "Remove worktree and delete branch")
                 # Destructive: confirm first
