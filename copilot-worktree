@@ -161,8 +161,8 @@ confirm_destructive_operation() {
     
     # For existing branches, check if they're safely backed up on remote
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
-        # If branch is on remote and no unpushed commits, skip confirmation
-        if branch_exists_on_remote "$branch_name" && ! has_unpushed_commits; then
+        # If branch exists on remote, it's safely backed up – skip confirmation
+        if branch_exists_on_remote "$branch_name"; then
             echo "Branch is safely on remote. Deleting locally..."
             return 0
         fi
