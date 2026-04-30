@@ -300,7 +300,8 @@ session_cleanup_menu() {
             "Push and remove worktree")
                 push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
                 echo "Worktree removed."
-                exit 0
+                cd "$ORIGINAL_DIR"
+                exec "$SHELL"
                 ;;
             "Discard changes and remove worktree")
                 # Destructive: confirm first
@@ -312,7 +313,8 @@ session_cleanup_menu() {
                         echo "Branch $CHOSEN_BRANCH deleted."
                     fi
                     echo "Worktree cleaned up."
-                    exit 0
+                    cd "$ORIGINAL_DIR"
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -325,7 +327,7 @@ session_cleanup_menu() {
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exit 0
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -360,7 +362,8 @@ session_cleanup_menu() {
                 if push_branch "$CHOSEN_BRANCH"; then
                     cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                     echo "Worktree removed."
-                    exit 0
+                    cd "$ORIGINAL_DIR"
+                    exec "$SHELL"
                 else
                     echo "Push failed. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "clean"
@@ -369,7 +372,8 @@ session_cleanup_menu() {
             "Remove worktree (keep branch)")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                 echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
-                exit 0
+                cd "$ORIGINAL_DIR"
+                exec "$SHELL"
                 ;;
             "Remove worktree and delete branch")
                 # Destructive: confirm first
@@ -378,7 +382,7 @@ session_cleanup_menu() {
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exit 0
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "clean"
