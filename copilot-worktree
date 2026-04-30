@@ -238,23 +238,23 @@ session_cleanup_menu() {
         
         # Build dirty menu options
         local _dirty_opts=(
-            "Keep worktree with changes"
+            "Stay in worktree with changes"
             "Commit changes"
-            "Push and clean up"
+            "Push and remove worktree"
         )
         
         # Add delete option based on BRANCH_EXISTS
         if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-            _dirty_opts+=("Drop all changes")
+            _dirty_opts+=("Discard changes and remove worktree")
         else
-            _dirty_opts+=("Delete branch and drop changes")
+            _dirty_opts+=("Discard changes, delete branch, and remove worktree")
         fi
         
         local _dirty_choice
         menu _dirty_choice "Worktree has uncommitted changes. What would you like to do?" "${_dirty_opts[@]}"
         
         case "$_dirty_choice" in
-            "Keep worktree with changes")
+            "Stay in worktree with changes")
                 echo "Staying in worktree with uncommitted changes at: $worktree_path"
                 cd "$worktree_path"
                 exec "$SHELL"
@@ -273,11 +273,11 @@ session_cleanup_menu() {
                 # After commit, show clean menu
                 session_cleanup_menu "$worktree_path" "$created" "clean"
                 ;;
-            "Push and clean up")
+            "Push and remove worktree")
                 push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
                 cleanup_and_return "$worktree_path" "$created" "switch"
                 ;;
-            "Drop all changes")
+            "Discard changes and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete the branch." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
                     cd "$ORIGINAL_DIR"
@@ -293,7 +293,7 @@ session_cleanup_menu() {
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
                 fi
                 ;;
-            "Delete branch and drop changes")
+            "Discard changes, delete branch, and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete branch $CHOSEN_BRANCH." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
                     cd "$ORIGINAL_DIR"
@@ -312,14 +312,14 @@ session_cleanup_menu() {
         # Build clean menu options
         local _clean_opts=(
             "Stay in worktree"
-            "Clean up worktree"
+            "Remove worktree (keep branch)"
         )
         
         # Add delete option based on BRANCH_EXISTS
         if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
-            _clean_opts+=("Drop branch and clean up")
+            _clean_opts+=("Remove worktree and delete branch")
         else
-            _clean_opts+=("Delete branch and clean up")
+            _clean_opts+=("Remove worktree and delete branch")
         fi
         
         local _clean_choice
@@ -331,11 +331,11 @@ session_cleanup_menu() {
                 cd "$worktree_path"
                 exec "$SHELL"
                 ;;
-            "Clean up worktree")
+            "Remove worktree (keep branch)")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                 cleanup_and_return "$worktree_path" "$created" "switch"
                 ;;
-            "Drop branch and clean up")
+            "Remove worktree and delete branch")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
                     cd "$ORIGINAL_DIR"
@@ -348,7 +348,7 @@ session_cleanup_menu() {
                     session_cleanup_menu "$worktree_path" "$created" "clean"
                 fi
                 ;;
-            "Delete branch and clean up")
+            "Remove worktree and delete branch")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
                     cd "$ORIGINAL_DIR"

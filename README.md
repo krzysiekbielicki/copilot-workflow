@@ -54,9 +54,9 @@ $ copilot
   ✔ Worktree is clean (no uncommitted changes)
 
   What next?
-  ❯ Stay in worktree             — Continue working
-    Clean up worktree            — Remove worktree, back to original branch
-    Drop branch and clean up     — Delete branch AND worktree
+  ❯ Stay in worktree                — Continue working
+    Remove worktree (keep branch)  — Back to original branch, branch stays
+    Remove worktree and delete branch — Delete branch AND worktree
 ```
 
 **If there were changes to commit:**
@@ -66,10 +66,10 @@ $ copilot
   ⚠ Worktree has uncommitted changes
 
   What next?
-  ❯ Keep worktree with changes   — Stay and commit manually later
-    Commit changes               — Stage all, commit, then show cleanup options
-    Push and clean up            — Commit, push to origin, optionally create PR, clean up
-    Drop all changes             — Delete everything (new branch only)
+  ❯ Stay in worktree with changes              — Stay and commit manually later
+    Commit changes                             — Stage all, commit, then show cleanup options
+    Push and remove worktree                   — Commit, push to origin, optionally create PR, remove worktree
+    Discard changes and remove worktree        — Delete everything (new branch only)
 ```
 
 No new commands to learn. Just type `copilot` like you always do.
@@ -87,9 +87,9 @@ Worktree is clean after Copilot finishes working.
   ✔ Worktree is clean (no uncommitted changes)
 
   What next?
-  ❯ Stay in worktree             — Continue working in the branch
-    Clean up worktree            — Remove worktree, return to original branch
-    Drop branch and clean up     — Delete branch AND worktree (new branches only)
+  ❯ Stay in worktree                            — Continue working in the branch
+    Remove worktree (keep branch)              — Remove worktree, return to original branch
+    Remove worktree and delete branch          — Delete branch AND worktree (new branches only)
 ```
 
 **Use this when:** Copilot finished and committed everything, or there's nothing new to commit.
@@ -105,13 +105,13 @@ New branch with changes that need committing.
   ⚠ Worktree has uncommitted changes
 
   What next?
-  ❯ Keep worktree with changes   — Stay in worktree, commit manually later
-    Commit changes               — Stage all, commit with auto-message, refresh menu
-    Push and clean up            — Commit, push to origin, create PR, clean up worktree
-    Drop all changes             — Delete everything (new branch only)
+  ❯ Stay in worktree with changes              — Stay in worktree, commit manually later
+    Commit changes                             — Stage all, commit with auto-message, refresh menu
+    Push and remove worktree                   — Commit, push to origin, create PR, remove worktree
+    Discard changes and remove worktree        — Delete everything (new branch only)
 ```
 
-**Use "Push and clean up" for:** Fast workflow — commit everything, push immediately, optionally create a PR, and get back to your original branch.
+**Use "Push and remove worktree" for:** Fast workflow — commit everything, push immediately, optionally create a PR, and get back to your original branch.
 
 ---
 
@@ -124,10 +124,10 @@ Working on an existing branch with changes.
   ⚠ Worktree has uncommitted changes
 
   What next?
-  ❯ Keep worktree with changes
+  ❯ Stay in worktree with changes
     Commit changes
-    Push and clean up            — Commit, push, ask about PR
-    Delete branch and drop changes ⚠ (requires extra confirmation)
+    Push and remove worktree                              — Commit, push, ask about PR
+    Discard changes, delete branch, and remove worktree ⚠ (requires extra confirmation)
 ```
 
 **Extra safety:** Deleting an existing branch requires an extra confirmation prompt to prevent accidents.
@@ -144,9 +144,9 @@ After committing, the menu refreshes to show clean state options.
 
   What next?
   ❯ Stay in worktree
-    Clean up worktree
-    Push and clean up
-    Drop branch and clean up
+    Remove worktree (keep branch)
+    Push and remove worktree
+    Remove worktree and delete branch
 ```
 
 **State transition:** Once committed, you can push immediately or continue working.
@@ -249,7 +249,7 @@ New branches created during this session can be deleted with a single confirmati
 
 ### Push Behavior
 
-When you select **"Push and clean up"**:
+When you select **"Push and remove worktree"**:
 1. Changes are committed (if not already)
 2. Pushed to `origin/<branch-name>`
 3. You're prompted to create a PR using GitHub CLI (`gh pr create`)
@@ -286,7 +286,7 @@ copilot-worktree
 - **git** ≥ 2.5 (worktree support)
 - **GitHub Copilot CLI** (`copilot` or `gh copilot`) on your `PATH`
 - **bash** ≥ 4 or **zsh**
-- *(Optional)* **GitHub CLI** (`gh`) — for creating PRs with "Push and clean up" workflow
+- *(Optional)* **GitHub CLI** (`gh`) — for creating PRs with "Push and remove worktree" workflow
 
 ## 🔄 Upgrading from Previous Versions
 
@@ -294,7 +294,7 @@ Existing workflows continue to work seamlessly with the new version:
 
 - **Menu consolidation:** Options have been reorganized for clarity, but all previous workflows still work
 - **Auto-detection:** The tool now intelligently detects clean vs dirty state automatically
-- **New "Push and clean up" option:** Available for faster commit+push+PR workflows (opt-in)
+- **New "Push and remove worktree" option:** Available for faster commit+push+PR workflows (opt-in)
 - **State transitions:** Menu refreshes after committing, allowing immediate push without re-running
 - **Backward compatible:** All existing branch/worktree behavior is unchanged
 
