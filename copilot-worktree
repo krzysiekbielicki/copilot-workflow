@@ -139,7 +139,7 @@ _branch_menu() {
     _output=$(printf '%s\n' "${_all_branches[@]+"${_all_branches[@]}"}" | gum filter \
         --header="$_prompt" \
         --placeholder="Type to filter or create new branch..." \
-        --allow-custom)
+        --no-strict)
 
     local _match_found=false
     for branch in "${_all_branches[@]+"${_all_branches[@]}"}"; do
