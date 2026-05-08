@@ -35,6 +35,14 @@ EOF
 
 check_gum_installed
 
+# Returns 0 when running inside a linked (non-main) worktree.
+is_linked_worktree() {
+    local git_dir common_dir
+    git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
+    common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    [[ -n "$git_dir" && -n "$common_dir" && "$git_dir" != "$common_dir" ]]
+}
+
 # ── Arrow-key menu using gum ──────────────────────────────────────────────────
 # Usage: menu <result_var> <prompt> <option1> <option2> ...
 # Sets result_var to the chosen option string.
@@ -554,6 +562,14 @@ case "$_worktree_choice" in
         echo "Launching copilot in current directory..."
         echo
         copilot "$@" || true
+        if is_linked_worktree; then
+            CHOSEN_BRANCH="$current_branch"
+            BRANCH_EXISTS=true
+            WORKTREE_PATH="$ORIGINAL_DIR"
+            CREATED_WORKTREE=false
+            cd "$WORKTREE_PATH"
+            session_cleanup_menu "$WORKTREE_PATH" "$CREATED_WORKTREE"
+        fi
         exit 0
         ;;
     "Use a different branch")
