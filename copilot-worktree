@@ -44,6 +44,36 @@ is_linked_worktree() {
     [[ -n "$git_dir" && -n "$common_dir" && "$git_dir" != "$common_dir" ]]
 }
 
+# Prints two lines:
+# 1) current worktree root containing $PWD
+# 2) primary worktree root (first entry from `git worktree list`)
+detect_worktree_roots() {
+    local cwd="$PWD"
+    local line path
+    local current_root=""
+    local primary_root=""
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
+            path="${BASH_REMATCH[1]}"
+            if [[ -z "$primary_root" ]]; then
+                primary_root="$path"
+            fi
+            if [[ "$cwd" == "$path" || "$cwd" == "$path/"* ]]; then
+                # Prefer the most specific match (longest path)
+                if [[ -z "$current_root" || ${#path} -gt ${#current_root} ]]; then
+                    current_root="$path"
+                fi
+            fi
+        fi
+    done < <(git worktree list --porcelain)
+
+    [[ -z "$current_root" ]] && current_root="$cwd"
+    [[ -z "$primary_root" ]] && primary_root="$current_root"
+
+    printf '%s\n%s\n' "$current_root" "$primary_root"
+}
+
 # ── Arrow-key menu using gum ──────────────────────────────────────────────────
 # Usage: menu <result_var> <prompt> <option1> <option2> ...
 # Sets result_var to the chosen option string.
@@ -501,15 +531,10 @@ fi
 
 # Normalize directories for git repos:
 # - ORIGINAL_DIR: current worktree root (for naming and branch context)
-# - RETURN_DIR: safe repo root to return to after cleanup/removal
-ORIGINAL_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-RETURN_DIR="$ORIGINAL_DIR"
-if is_linked_worktree; then
-    common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-    if [[ -n "$common_dir" ]]; then
-        RETURN_DIR="$(cd "$common_dir/.." && pwd)"
-    fi
-fi
+# - RETURN_DIR: primary worktree root (first entry from `git worktree list`)
+mapfile -t _roots < <(detect_worktree_roots)
+ORIGINAL_DIR="${_roots[0]}"
+RETURN_DIR="${_roots[1]}"
 cd "$ORIGINAL_DIR"
 
 # ── Ask whether to use a different branch ───────────────────────────────────
