@@ -116,6 +116,17 @@ has_unpushed_commits() {
     [[ -n "$(git log --oneline "$upstream..HEAD" 2>/dev/null)" ]]
 }
 
+# ── Helper: Check if a specific branch has unpushed commits ────────────────────
+branch_has_unpushed_commits() {
+    local branch_name="$1"
+    local upstream
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "${branch_name}@{u}" 2>/dev/null)" || true
+    if [[ -z "$upstream" ]]; then
+        return 0
+    fi
+    [[ -n "$(git log --oneline "$upstream..$branch_name" 2>/dev/null)" ]]
+}
+
 # ── Helper: Push branch and optionally create PR ─────────────────────────────
 push_branch() {
     local branch_name="$1"
@@ -196,15 +207,34 @@ confirm_destructive_operation() {
     
     # For existing branches, show branch info
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
+        local upstream
+        upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "${branch_name}@{u}" 2>/dev/null)" || true
+
         echo "Branch Information:"
         git log -1 --oneline "$branch_name" | sed 's/^/  /'
         echo
-        echo "⚠️  Deleting EXISTING branch: You won't be able to recover it unless pushed to remote."
-        echo
-        local _confirm=""
-        menu _confirm "Delete $branch_name permanently?" \
-            "Yes, delete permanently" \
-            "No, keep it"
+
+        if [[ -n "$upstream" ]] && ! branch_has_unpushed_commits "$branch_name"; then
+            echo "ℹ️  This branch is fully pushed to $upstream."
+            echo "You can recreate it later from remote if needed."
+            echo
+            local _confirm=""
+            menu _confirm "Delete local branch $branch_name and remove worktree?" \
+                "Yes, delete local branch" \
+                "No, keep it"
+        else
+            if [[ -n "$upstream" ]]; then
+                echo "⚠️  This branch has local commits not pushed to $upstream."
+            else
+                echo "⚠️  This branch has no upstream remote configured."
+            fi
+            echo "Deleting it now may make your local commits hard to recover."
+            echo
+            local _confirm=""
+            menu _confirm "Delete $branch_name permanently?" \
+                "Yes, delete permanently" \
+                "No, keep it"
+        fi
     else
         # For new branches, simpler message
         echo "This will delete the branch and remove the worktree. This cannot be undone."
