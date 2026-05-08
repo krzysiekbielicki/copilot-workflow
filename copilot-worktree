@@ -4,6 +4,7 @@ set -euo pipefail
 trap 'true' EXIT
 
 ORIGINAL_DIR=$(pwd)
+RETURN_DIR="$ORIGINAL_DIR"
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
 
@@ -69,7 +70,7 @@ cleanup_and_return() {
             exec "$SHELL"
             ;;
         delete)
-            cd "$ORIGINAL_DIR"
+            cd "$RETURN_DIR"
             if [[ "$created" == true ]]; then
                 echo "Removing worktree: $worktree_path"
                 git worktree remove --force "$worktree_path"
@@ -81,7 +82,7 @@ cleanup_and_return() {
             return 0
             ;;
         switch)
-            cd "$ORIGINAL_DIR"
+            cd "$RETURN_DIR"
             if [[ "$created" == true ]]; then
                 echo "Removing worktree: $worktree_path"
                 git worktree remove --force "$worktree_path"
@@ -276,8 +277,8 @@ cleanup_worktree() {
 
 # ── Helper: Return user to original repo root after cleanup ───────────────────
 return_to_repo_root() {
-    cd "$ORIGINAL_DIR"
-    echo "Returned to repository root: $ORIGINAL_DIR"
+    cd "$RETURN_DIR"
+    echo "Returned to repository root: $RETURN_DIR"
     if [[ -t 0 && -t 1 ]]; then
         exec "$SHELL"
     fi
@@ -385,7 +386,7 @@ session_cleanup_menu() {
                 session_cleanup_menu "$worktree_path" "$created" "clean"
                 ;;
             "Push and remove worktree")
-                push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
+                push_and_cleanup "$worktree_path" "$RETURN_DIR" "$CHOSEN_BRANCH"
                 echo "Worktree removed."
                 return_to_repo_root
                 exit 0
@@ -393,7 +394,7 @@ session_cleanup_menu() {
             "Discard changes and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete the branch." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
                         git branch -D "$CHOSEN_BRANCH"
@@ -410,7 +411,7 @@ session_cleanup_menu() {
             "Discard changes, delete branch, and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete branch $CHOSEN_BRANCH." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
@@ -448,7 +449,7 @@ session_cleanup_menu() {
                 ;;
             "Push and remove worktree")
                 if push_branch "$CHOSEN_BRANCH"; then
-                    cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                    cleanup_worktree "$worktree_path" "$RETURN_DIR"
                     echo "Worktree removed."
                     return_to_repo_root
                     exit 0
@@ -458,7 +459,7 @@ session_cleanup_menu() {
                 fi
                 ;;
             "Remove worktree (keep branch)")
-                cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                cleanup_worktree "$worktree_path" "$RETURN_DIR"
                 echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
                 return_to_repo_root
                 exit 0
@@ -466,7 +467,7 @@ session_cleanup_menu() {
             "Remove worktree and delete branch")
                 # Skip confirmation when branch is recoverable from remote
                 if [[ "${BRANCH_EXISTS:-true}" == true ]] && is_branch_recoverable "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
@@ -475,7 +476,7 @@ session_cleanup_menu() {
                 else
                     # Destructive: confirm first when branch is not recoverable
                     if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                        cd "$ORIGINAL_DIR"
+                        cd "$RETURN_DIR"
                         git worktree remove --force "$worktree_path"
                         git branch -D "$CHOSEN_BRANCH"
                         echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
@@ -497,6 +498,19 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     copilot "$@"
     exit 0
 fi
+
+# Normalize directories for git repos:
+# - ORIGINAL_DIR: current worktree root (for naming and branch context)
+# - RETURN_DIR: safe repo root to return to after cleanup/removal
+ORIGINAL_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+RETURN_DIR="$ORIGINAL_DIR"
+if is_linked_worktree; then
+    common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$common_dir" ]]; then
+        RETURN_DIR="$(cd "$common_dir/.." && pwd)"
+    fi
+fi
+cd "$ORIGINAL_DIR"
 
 # ── Ask whether to use a different branch ───────────────────────────────────
 current_branch=$(git rev-parse --abbrev-ref HEAD)
@@ -655,7 +669,7 @@ fi
 
 echo "Using branch: $CHOSEN_BRANCH"
 current_dir_name="${ORIGINAL_DIR##*/}"
-parent_dir=$(cd .. && pwd)
+parent_dir="$(dirname "$ORIGINAL_DIR")"
 worktree_name="$current_dir_name-${CHOSEN_BRANCH//\//_}"
 WORKTREE_PATH="$parent_dir/$worktree_name"
 
