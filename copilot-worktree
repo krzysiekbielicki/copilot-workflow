@@ -532,9 +532,10 @@ fi
 # Normalize directories for git repos:
 # - ORIGINAL_DIR: current worktree root (for naming and branch context)
 # - RETURN_DIR: primary worktree root (first entry from `git worktree list`)
-mapfile -t _roots < <(detect_worktree_roots)
-ORIGINAL_DIR="${_roots[0]}"
-RETURN_DIR="${_roots[1]}"
+_roots_output="$(detect_worktree_roots)"
+ORIGINAL_DIR="$(printf '%s\n' "$_roots_output" | sed -n '1p')"
+RETURN_DIR="$(printf '%s\n' "$_roots_output" | sed -n '2p')"
+[[ -z "$RETURN_DIR" ]] && RETURN_DIR="$ORIGINAL_DIR"
 cd "$ORIGINAL_DIR"
 
 # ── Ask whether to use a different branch ───────────────────────────────────
