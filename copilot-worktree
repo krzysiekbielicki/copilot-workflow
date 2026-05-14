@@ -113,43 +113,6 @@ menu() {
     printf -v "$_var" '%s' "$_choice"
 }
 
-cleanup_and_return() {
-    local worktree_path="$1"
-    local created="$2"
-    local action="${3:-switch}"  # switch, stay, or delete
-
-    case "$action" in
-        stay)
-            echo "Staying in worktree at: $worktree_path"
-            cd "$worktree_path"
-            exec "$SHELL"
-            ;;
-        delete)
-            cd "$RETURN_DIR"
-            if [[ "$created" == true ]]; then
-                echo "Removing worktree: $worktree_path"
-                git worktree remove --force "$worktree_path"
-            fi
-            if [[ -n "${CHOSEN_BRANCH:-}" && "${BRANCH_EXISTS:-true}" == false ]]; then
-                git branch -D "$CHOSEN_BRANCH"
-                echo "Branch $CHOSEN_BRANCH deleted."
-            fi
-            return 0
-            ;;
-        switch)
-            cd "$RETURN_DIR"
-            if [[ "$created" == true ]]; then
-                echo "Removing worktree: $worktree_path"
-                git worktree remove --force "$worktree_path"
-            fi
-            if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
-                git checkout "$CHOSEN_BRANCH"
-            fi
-            return 0
-            ;;
-    esac
-}
-
 # ── Helper: Check if worktree has uncommitted changes ─────────────────────────
 is_worktree_dirty() {
     # Check for uncommitted changes: staged, unstaged, or untracked files
@@ -449,10 +412,14 @@ session_cleanup_menu() {
                 session_cleanup_menu "$worktree_path" "$created" "clean"
                 ;;
             "Push and remove worktree")
-                push_and_cleanup "$worktree_path" "$RETURN_DIR" "$CHOSEN_BRANCH"
-                echo "Worktree removed."
-                return_to_repo_root
-                exit 0
+                if push_and_cleanup "$worktree_path" "$RETURN_DIR" "$CHOSEN_BRANCH"; then
+                    echo "Worktree removed."
+                    return_to_repo_root
+                    exit 0
+                else
+                    echo "Push/cleanup failed. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "dirty"
+                fi
                 ;;
             "Discard changes and remove worktree")
                 # Destructive: confirm first
