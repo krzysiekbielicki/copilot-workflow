@@ -83,9 +83,8 @@ all_commits_on_remote() {
     local branch_commit
     branch_commit=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
     
-    # Check if this commit exists in the remote (e.g., in main, develop, or any other ref)
+    # Refresh remote refs to make ancestry checks accurate
     git fetch origin --quiet 2>/dev/null || true
-    git cat-file -e "$branch_commit" 2>/dev/null || return 1
     
     # Verify the commit is actually on remote by checking if it's reachable from origin branches
     git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
@@ -268,7 +267,7 @@ confirm_destructive_operation() {
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
         # If all commits are on remote (even if branch was merged and deleted), skip confirmation
         if all_commits_on_remote "$branch_name"; then
-            echo "All commits exist on remote. Deleting locally..."
+            echo "All commits exist on remote. Skipping confirmation..."
             return 0
         fi
 
