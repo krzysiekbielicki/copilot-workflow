@@ -3,7 +3,9 @@ set -euo pipefail
 
 trap 'true' EXIT
 
-ORIGINAL_DIR=$(pwd)
+# Resolve to the main worktree root so we always have a safe directory to return to,
+# even when running from inside a worktree that may get deleted.
+ORIGINAL_DIR=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //' || pwd)
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
 
@@ -34,6 +36,30 @@ EOF
 }
 
 check_gum_installed
+
+# ── Helper: Check if all commits of a branch are on remote ──────────────────
+# Returns 0 (true) if all commits in the branch exist somewhere on the remote
+# (they may have been merged to other branches)
+all_commits_on_remote() {
+    local branch_name="$1"
+    # Get the commit hash of the branch
+    local branch_commit
+    branch_commit=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
+    
+    # Check if this commit exists in the remote (e.g., in main, develop, or any other ref)
+    git fetch origin --quiet 2>/dev/null || true
+    git cat-file -e "$branch_commit" 2>/dev/null || return 1
+    
+    # Verify the commit is actually on remote by checking if it's reachable from origin branches
+    git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
+    
+    # Also check against other common branches
+    for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null); do
+        git merge-base --is-ancestor "$branch_commit" "$ref" 2>/dev/null && return 0
+    done
+    
+    return 1
+}
 
 # ── Arrow-key menu using gum ──────────────────────────────────────────────────
 # Usage: menu <result_var> <prompt> <option1> <option2> ...
@@ -182,12 +208,17 @@ confirm_destructive_operation() {
     local branch_exists="${2:-true}"
     local branch_name="${3:-}"
     
-    echo
-    echo "⚠️  $operation"
-    echo
-    
-    # For existing branches, show branch info
+    # For existing branches, check if all commits are on remote
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
+        # If all commits are on remote (even if branch was merged and deleted), skip confirmation
+        if all_commits_on_remote "$branch_name"; then
+            echo "All commits exist on remote. Deleting locally..."
+            return 0
+        fi
+        
+        echo
+        echo "⚠️  $operation"
+        echo
         echo "Branch Information:"
         git log -1 --oneline "$branch_name" | sed 's/^/  /'
         echo
@@ -199,6 +230,9 @@ confirm_destructive_operation() {
             "No, keep it"
     else
         # For new branches, simpler message
+        echo
+        echo "⚠️  $operation"
+        echo
         echo "This will delete the branch and remove the worktree. This cannot be undone."
         echo
         local _confirm=""
@@ -331,7 +365,8 @@ session_cleanup_menu() {
             "Push and remove worktree")
                 push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
                 echo "Worktree removed."
-                exit 0
+                cd "$ORIGINAL_DIR"
+                exec "$SHELL"
                 ;;
             "Discard changes and remove worktree")
                 # Destructive: confirm first
@@ -343,7 +378,8 @@ session_cleanup_menu() {
                         echo "Branch $CHOSEN_BRANCH deleted."
                     fi
                     echo "Worktree cleaned up."
-                    exit 0
+                    cd "$ORIGINAL_DIR"
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -356,7 +392,7 @@ session_cleanup_menu() {
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exit 0
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -391,7 +427,8 @@ session_cleanup_menu() {
                 if push_branch "$CHOSEN_BRANCH"; then
                     cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                     echo "Worktree removed."
-                    exit 0
+                    cd "$ORIGINAL_DIR"
+                    exec "$SHELL"
                 else
                     echo "Push failed. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "clean"
@@ -400,7 +437,8 @@ session_cleanup_menu() {
             "Remove worktree (keep branch)")
                 cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
                 echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
-                exit 0
+                cd "$ORIGINAL_DIR"
+                exec "$SHELL"
                 ;;
             "Remove worktree and delete branch")
                 # Destructive: confirm first
@@ -409,7 +447,7 @@ session_cleanup_menu() {
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exit 0
+                    exec "$SHELL"
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "clean"
@@ -554,7 +592,17 @@ case "$_worktree_choice" in
         echo "Launching copilot in current directory..."
         echo
         copilot "$@" || true
-        exit 0
+        # If we're inside a secondary worktree, show cleanup menu
+        _current_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        if [[ -n "$_current_toplevel" && "$_current_toplevel" != "$ORIGINAL_DIR" ]]; then
+            CHOSEN_BRANCH="$current_branch"
+            BRANCH_EXISTS=true
+            WORKTREE_PATH="$_current_toplevel"
+            cd "$WORKTREE_PATH"
+            session_cleanup_menu "$WORKTREE_PATH" false
+        else
+            exit 0
+        fi
         ;;
     "Use a different branch")
         choose_branch
