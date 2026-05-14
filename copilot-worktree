@@ -269,7 +269,7 @@ confirm_destructive_operation() {
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
         # If all commits are on remote (even if branch was merged and deleted), skip confirmation
         if all_commits_on_remote "$branch_name"; then
-            echo "All commits found on remote. Proceeding without confirmation..."
+            echo "All commits found on remote. Proceeding with cleanup without confirmation..."
             return 0
         fi
 
