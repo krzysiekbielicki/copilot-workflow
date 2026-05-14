@@ -3,9 +3,8 @@ set -euo pipefail
 
 trap 'true' EXIT
 
-# Resolve to the main worktree root so we always have a safe directory to return to,
-# even when running from inside a worktree that may get deleted.
-ORIGINAL_DIR=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //' || pwd)
+ORIGINAL_DIR=$(pwd)
+RETURN_DIR="$ORIGINAL_DIR"
 CREATED_WORKTREE=false
 WORKTREE_PATH=""
 
@@ -37,6 +36,44 @@ EOF
 
 check_gum_installed
 
+# Returns 0 when running inside a linked (non-main) worktree.
+is_linked_worktree() {
+    local git_dir common_dir
+    git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"
+    common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    [[ -n "$git_dir" && -n "$common_dir" && "$git_dir" != "$common_dir" ]]
+}
+
+# Prints two lines:
+# 1) current worktree root containing $PWD
+# 2) primary worktree root (first entry from `git worktree list`)
+detect_worktree_roots() {
+    local cwd="$PWD"
+    local line path
+    local current_root=""
+    local primary_root=""
+
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
+            path="${BASH_REMATCH[1]}"
+            if [[ -z "$primary_root" ]]; then
+                primary_root="$path"
+            fi
+            if [[ "$cwd" == "$path" || "$cwd" == "$path/"* ]]; then
+                # Prefer the most specific match (longest path)
+                if [[ -z "$current_root" || ${#path} -gt ${#current_root} ]]; then
+                    current_root="$path"
+                fi
+            fi
+        fi
+    done < <(git worktree list --porcelain)
+
+    [[ -z "$current_root" ]] && current_root="$cwd"
+    [[ -z "$primary_root" ]] && primary_root="$current_root"
+
+    printf '%s\n%s\n' "$current_root" "$primary_root"
+}
+
 # ── Helper: Check if all commits of a branch are on remote ──────────────────
 # Returns 0 (true) if all commits in the branch exist somewhere on the remote
 # (they may have been merged to other branches)
@@ -46,18 +83,19 @@ all_commits_on_remote() {
     local branch_commit
     branch_commit=$(git rev-parse "$branch_name" 2>/dev/null) || return 1
     
-    # Check if this commit exists in the remote (e.g., in main, develop, or any other ref)
+    # Refresh remote refs to make ancestry checks accurate
     git fetch origin --quiet 2>/dev/null || true
-    git cat-file -e "$branch_commit" 2>/dev/null || return 1
     
-    # Verify the commit is actually on remote by checking if it's reachable from origin branches
-    git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
-    
-    # Also check against other common branches
-    for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null); do
+    # Verify the commit is actually on remote by checking if it's reachable from origin refs.
+    if git show-ref --verify --quiet refs/remotes/origin/HEAD; then
+        git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
+    fi
+
+    while IFS= read -r ref; do
+        [[ "$ref" == "origin/HEAD" ]] && continue
         git merge-base --is-ancestor "$branch_commit" "$ref" 2>/dev/null && return 0
-    done
-    
+    done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null)
+
     return 1
 }
 
@@ -73,43 +111,6 @@ menu() {
     _choice=$(gum choose --header="$_prompt" "${_opts[@]}")
     
     printf -v "$_var" '%s' "$_choice"
-}
-
-cleanup_and_return() {
-    local worktree_path="$1"
-    local created="$2"
-    local action="${3:-switch}"  # switch, stay, or delete
-
-    case "$action" in
-        stay)
-            echo "Staying in worktree at: $worktree_path"
-            cd "$worktree_path"
-            exec "$SHELL"
-            ;;
-        delete)
-            cd "$ORIGINAL_DIR"
-            if [[ "$created" == true ]]; then
-                echo "Removing worktree: $worktree_path"
-                git worktree remove --force "$worktree_path"
-            fi
-            if [[ -n "${CHOSEN_BRANCH:-}" && "${BRANCH_EXISTS:-true}" == false ]]; then
-                git branch -D "$CHOSEN_BRANCH"
-                echo "Branch $CHOSEN_BRANCH deleted."
-            fi
-            return 0
-            ;;
-        switch)
-            cd "$ORIGINAL_DIR"
-            if [[ "$created" == true ]]; then
-                echo "Removing worktree: $worktree_path"
-                git worktree remove --force "$worktree_path"
-            fi
-            if [[ -n "${CHOSEN_BRANCH:-}" ]]; then
-                git checkout "$CHOSEN_BRANCH"
-            fi
-            return 0
-            ;;
-    esac
 }
 
 # ── Helper: Check if worktree has uncommitted changes ─────────────────────────
@@ -132,6 +133,25 @@ has_unpushed_commits() {
     fi
     # Upstream exists – check if there are commits ahead
     [[ -n "$(git log --oneline "$upstream..HEAD" 2>/dev/null)" ]]
+}
+
+# ── Helper: Check if a specific branch has unpushed commits ────────────────────
+branch_has_unpushed_commits() {
+    local branch_name="$1"
+    local upstream
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "${branch_name}@{u}" 2>/dev/null)" || true
+    if [[ -z "$upstream" ]]; then
+        return 0
+    fi
+    [[ -n "$(git log --oneline "$upstream..$branch_name" 2>/dev/null)" ]]
+}
+
+# ── Helper: Branch can be safely recreated from remote ─────────────────────────
+is_branch_recoverable() {
+    local branch_name="$1"
+    local upstream
+    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "${branch_name}@{u}" 2>/dev/null)" || true
+    [[ -n "$upstream" ]] && ! branch_has_unpushed_commits "$branch_name"
 }
 
 # ── Helper: Push branch and optionally create PR ─────────────────────────────
@@ -212,22 +232,41 @@ confirm_destructive_operation() {
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
         # If all commits are on remote (even if branch was merged and deleted), skip confirmation
         if all_commits_on_remote "$branch_name"; then
-            echo "All commits exist on remote. Deleting locally..."
+            echo "All commits found on remote. Proceeding with cleanup without confirmation..."
             return 0
         fi
-        
+
+        local upstream
+        upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "${branch_name}@{u}" 2>/dev/null)" || true
+
         echo
         echo "⚠️  $operation"
         echo
         echo "Branch Information:"
         git log -1 --oneline "$branch_name" | sed 's/^/  /'
         echo
-        echo "⚠️  Deleting EXISTING branch: You won't be able to recover it unless pushed to remote."
-        echo
-        local _confirm=""
-        menu _confirm "Delete $branch_name permanently?" \
-            "Yes, delete permanently" \
-            "No, keep it"
+
+        if is_branch_recoverable "$branch_name"; then
+            echo "ℹ️  This branch is fully pushed to $upstream."
+            echo "You can recreate it later from remote if needed."
+            echo
+            local _confirm=""
+            menu _confirm "Delete local branch $branch_name and remove worktree?" \
+                "Yes, delete local branch" \
+                "No, keep it"
+        else
+            if [[ -n "$upstream" ]]; then
+                echo "⚠️  This branch has local commits not pushed to $upstream."
+            else
+                echo "⚠️  This branch has no upstream remote configured."
+            fi
+            echo "Deleting it now may make your local commits hard to recover."
+            echo
+            local _confirm=""
+            menu _confirm "Delete $branch_name permanently?" \
+                "Yes, delete permanently" \
+                "No, keep it"
+        fi
     else
         # For new branches, simpler message
         echo
@@ -259,6 +298,16 @@ cleanup_worktree() {
         git worktree remove --force "$worktree_path"
     fi
     
+    return 0
+}
+
+# ── Helper: Return user to original repo root after cleanup ───────────────────
+return_to_repo_root() {
+    cd "$RETURN_DIR"
+    echo "Returned to repository root: $RETURN_DIR"
+    if [[ -t 0 && -t 1 ]]; then
+        exec "$SHELL"
+    fi
     return 0
 }
 
@@ -363,23 +412,27 @@ session_cleanup_menu() {
                 session_cleanup_menu "$worktree_path" "$created" "clean"
                 ;;
             "Push and remove worktree")
-                push_and_cleanup "$worktree_path" "$ORIGINAL_DIR" "$CHOSEN_BRANCH"
-                echo "Worktree removed."
-                cd "$ORIGINAL_DIR"
-                exec "$SHELL"
+                if push_and_cleanup "$worktree_path" "$RETURN_DIR" "$CHOSEN_BRANCH"; then
+                    echo "Worktree removed."
+                    return_to_repo_root
+                    exit 0
+                else
+                    echo "Push/cleanup failed. Returning to menu."
+                    session_cleanup_menu "$worktree_path" "$created" "dirty"
+                fi
                 ;;
             "Discard changes and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete the branch." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     if [[ "${BRANCH_EXISTS:-true}" == false ]]; then
                         git branch -D "$CHOSEN_BRANCH"
                         echo "Branch $CHOSEN_BRANCH deleted."
                     fi
                     echo "Worktree cleaned up."
-                    cd "$ORIGINAL_DIR"
-                    exec "$SHELL"
+                    return_to_repo_root
+                    exit 0
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -388,11 +441,12 @@ session_cleanup_menu() {
             "Discard changes, delete branch, and remove worktree")
                 # Destructive: confirm first
                 if confirm_destructive_operation "About to drop all changes and delete branch $CHOSEN_BRANCH." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exec "$SHELL"
+                    return_to_repo_root
+                    exit 0
                 else
                     echo "Operation cancelled. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "dirty"
@@ -425,32 +479,43 @@ session_cleanup_menu() {
                 ;;
             "Push and remove worktree")
                 if push_branch "$CHOSEN_BRANCH"; then
-                    cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                    cleanup_worktree "$worktree_path" "$RETURN_DIR"
                     echo "Worktree removed."
-                    cd "$ORIGINAL_DIR"
-                    exec "$SHELL"
+                    return_to_repo_root
+                    exit 0
                 else
                     echo "Push failed. Returning to menu."
                     session_cleanup_menu "$worktree_path" "$created" "clean"
                 fi
                 ;;
             "Remove worktree (keep branch)")
-                cleanup_worktree "$worktree_path" "$ORIGINAL_DIR"
+                cleanup_worktree "$worktree_path" "$RETURN_DIR"
                 echo "Worktree removed. Branch $CHOSEN_BRANCH kept."
-                cd "$ORIGINAL_DIR"
-                exec "$SHELL"
+                return_to_repo_root
+                exit 0
                 ;;
             "Remove worktree and delete branch")
-                # Destructive: confirm first
-                if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
-                    cd "$ORIGINAL_DIR"
+                # Skip confirmation when branch is recoverable from remote
+                if [[ "${BRANCH_EXISTS:-true}" == true ]] && is_branch_recoverable "$CHOSEN_BRANCH"; then
+                    cd "$RETURN_DIR"
                     git worktree remove --force "$worktree_path"
                     git branch -D "$CHOSEN_BRANCH"
                     echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
-                    exec "$SHELL"
+                    return_to_repo_root
+                    exit 0
                 else
-                    echo "Operation cancelled. Returning to menu."
-                    session_cleanup_menu "$worktree_path" "$created" "clean"
+                    # Destructive: confirm first when branch is not recoverable
+                    if confirm_destructive_operation "About to delete branch $CHOSEN_BRANCH and clean up worktree." "$BRANCH_EXISTS" "$CHOSEN_BRANCH"; then
+                        cd "$RETURN_DIR"
+                        git worktree remove --force "$worktree_path"
+                        git branch -D "$CHOSEN_BRANCH"
+                        echo "Branch $CHOSEN_BRANCH deleted and worktree cleaned up."
+                        return_to_repo_root
+                        exit 0
+                    else
+                        echo "Operation cancelled. Returning to menu."
+                        session_cleanup_menu "$worktree_path" "$created" "clean"
+                    fi
                 fi
                 ;;
         esac
@@ -463,6 +528,15 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     copilot "$@"
     exit 0
 fi
+
+# Normalize directories for git repos:
+# - ORIGINAL_DIR: current worktree root (for naming and branch context)
+# - RETURN_DIR: primary worktree root (first entry from `git worktree list`)
+_roots_output="$(detect_worktree_roots)"
+ORIGINAL_DIR="$(printf '%s\n' "$_roots_output" | sed -n '1p')"
+RETURN_DIR="$(printf '%s\n' "$_roots_output" | sed -n '2p')"
+[[ -z "$RETURN_DIR" ]] && RETURN_DIR="$ORIGINAL_DIR"
+cd "$ORIGINAL_DIR"
 
 # ── Ask whether to use a different branch ───────────────────────────────────
 current_branch=$(git rev-parse --abbrev-ref HEAD)
@@ -592,17 +666,15 @@ case "$_worktree_choice" in
         echo "Launching copilot in current directory..."
         echo
         copilot "$@" || true
-        # If we're inside a secondary worktree, show cleanup menu
-        _current_toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-        if [[ -n "$_current_toplevel" && "$_current_toplevel" != "$ORIGINAL_DIR" ]]; then
+        if is_linked_worktree; then
             CHOSEN_BRANCH="$current_branch"
             BRANCH_EXISTS=true
-            WORKTREE_PATH="$_current_toplevel"
+            WORKTREE_PATH="$ORIGINAL_DIR"
+            CREATED_WORKTREE=false
             cd "$WORKTREE_PATH"
-            session_cleanup_menu "$WORKTREE_PATH" false
-        else
-            exit 0
+            session_cleanup_menu "$WORKTREE_PATH" "$CREATED_WORKTREE"
         fi
+        exit 0
         ;;
     "Use a different branch")
         choose_branch
@@ -623,7 +695,7 @@ fi
 
 echo "Using branch: $CHOSEN_BRANCH"
 current_dir_name="${ORIGINAL_DIR##*/}"
-parent_dir=$(cd .. && pwd)
+parent_dir="$(dirname "$ORIGINAL_DIR")"
 worktree_name="$current_dir_name-${CHOSEN_BRANCH//\//_}"
 WORKTREE_PATH="$parent_dir/$worktree_name"
 

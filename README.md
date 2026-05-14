@@ -272,7 +272,8 @@ copilot-worktree
        │
        ├── Not in a git repo? ──► copilot "$@"  (pass-through)
        │
-       ├── "Run Copilot here" ──► copilot "$@"  (pass-through)
+       ├── "Run Copilot here" ──► copilot "$@"  (pass-through in main worktree)
+       │                           └── linked worktree: post-session cleanup menu
        │
        └── "Use a different branch" ──► git worktree add …
                                          │
