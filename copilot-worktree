@@ -86,14 +86,16 @@ all_commits_on_remote() {
     # Refresh remote refs to make ancestry checks accurate
     git fetch origin --quiet 2>/dev/null || true
     
-    # Verify the commit is actually on remote by checking if it's reachable from origin branches
-    git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
-    
-    # Also check against other common branches
-    for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null); do
+    # Verify the commit is actually on remote by checking if it's reachable from origin refs.
+    if git show-ref --verify --quiet refs/remotes/origin/HEAD; then
+        git merge-base --is-ancestor "$branch_commit" origin/HEAD 2>/dev/null && return 0
+    fi
+
+    while IFS= read -r ref; do
+        [[ "$ref" == "origin/HEAD" ]] && continue
         git merge-base --is-ancestor "$branch_commit" "$ref" 2>/dev/null && return 0
-    done
-    
+    done < <(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ 2>/dev/null)
+
     return 1
 }
 
@@ -267,7 +269,7 @@ confirm_destructive_operation() {
     if [[ "$branch_exists" == true && -n "$branch_name" ]]; then
         # If all commits are on remote (even if branch was merged and deleted), skip confirmation
         if all_commits_on_remote "$branch_name"; then
-            echo "All commits exist on remote. Skipping confirmation..."
+            echo "All commits found on remote. Proceeding without confirmation..."
             return 0
         fi
 
